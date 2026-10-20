@@ -309,6 +309,21 @@ CREATE INDEX IF NOT EXISTS idx_orders_seller_id ON orders(seller_id);
 CREATE INDEX IF NOT EXISTS idx_proposals_project_id ON proposals(project_id);
 CREATE INDEX IF NOT EXISTS idx_offers_order_id ON workstream_offers(order_id);
 
+CREATE TABLE IF NOT EXISTS notifications (
+  id VARCHAR(64) PRIMARY KEY,
+  user_id VARCHAR(64) NOT NULL,
+  type VARCHAR(64) NOT NULL,
+  title TEXT NOT NULL,
+  message TEXT NOT NULL,
+  link TEXT,
+  read BOOLEAN DEFAULT FALSE,
+  created_at VARCHAR(64) NOT NULL,
+  dedup_key VARCHAR(255) UNIQUE
+);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications(created_at);
+
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS workspace_id VARCHAR(64);
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS seller_review JSONB;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS previous_status VARCHAR(64);

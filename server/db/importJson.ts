@@ -26,7 +26,7 @@ export async function importDataToPostgres(targetDatabase?: string) {
 
   // 1. Users
   console.log('[Import] Seeding users...');
-  const users = SEED_USERS.map(u => ({
+  const users = SEED_USERS.map((u: any) => ({
     ...u,
     sessionVersion: u.sessionVersion || 1,
     knownDevices: u.knownDevices || ['dev_default_session']
@@ -39,7 +39,7 @@ export async function importDataToPostgres(targetDatabase?: string) {
 
   // 3. Projects
   const projectsFile = path.join(DATA_DIR, 'workstream_projects.json');
-  let projects = [...SEED_PROJECTS];
+  let projects: any[] = [...SEED_PROJECTS];
   if (fs.existsSync(projectsFile)) {
     try {
       const p = JSON.parse(fs.readFileSync(projectsFile, 'utf-8'));
@@ -51,7 +51,7 @@ export async function importDataToPostgres(targetDatabase?: string) {
 
   // 4. Proposals
   const proposalsFile = path.join(DATA_DIR, 'workstream_proposals.json');
-  let proposals = [...SEED_PROPOSALS];
+  let proposals: any[] = [...SEED_PROPOSALS];
   if (fs.existsSync(proposalsFile)) {
     try {
       const pr = JSON.parse(fs.readFileSync(proposalsFile, 'utf-8'));
@@ -63,7 +63,7 @@ export async function importDataToPostgres(targetDatabase?: string) {
 
   // 5. Orders
   const ordersFile = path.join(DATA_DIR, 'workstream_orders.json');
-  let orders = [...SEED_ORDERS];
+  let orders: any[] = [...SEED_ORDERS];
   if (fs.existsSync(ordersFile)) {
     try {
       const o = JSON.parse(fs.readFileSync(ordersFile, 'utf-8'));
@@ -75,7 +75,7 @@ export async function importDataToPostgres(targetDatabase?: string) {
 
   // 6. Messages
   const messagesFile = path.join(DATA_DIR, 'workstream_messages.json');
-  let messages = [...SEED_MESSAGES];
+  let messages: any[] = [...SEED_MESSAGES];
   if (fs.existsSync(messagesFile)) {
     try {
       const m = JSON.parse(fs.readFileSync(messagesFile, 'utf-8'));
@@ -87,7 +87,7 @@ export async function importDataToPostgres(targetDatabase?: string) {
 
   // 7. Reviews
   const reviewsFile = path.join(DATA_DIR, 'workstream_reviews.json');
-  let reviews = [...SEED_REVIEWS];
+  let reviews: any[] = [...SEED_REVIEWS];
   if (fs.existsSync(reviewsFile)) {
     try {
       const r = JSON.parse(fs.readFileSync(reviewsFile, 'utf-8'));

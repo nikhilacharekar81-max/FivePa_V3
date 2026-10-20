@@ -389,6 +389,20 @@ export interface WorkstreamUploadRecord {
   sha256?: string;
 }
 
+export interface Notification {
+  id: string;
+  userId: string;
+  type: string;
+  title: string;
+  message: string;
+  link?: string;
+  read: boolean;
+  createdAt: string;
+  dedupKey?: string;
+}
+
+export let notifications: Notification[] = [];
+
 // ==========================================
 // STORE INTERFACE (Prompt A requirement)
 // ==========================================
@@ -996,6 +1010,9 @@ export async function hydrateStoreFromPostgres() {
       if (loadedLedger) {
         financeLedger.loadFromState(loadedLedger);
       }
+
+      const loadedNotifs = await postgresStore.listAllNotifications();
+      if (loadedNotifs && loadedNotifs.length > 0) { notifications.length = 0; notifications.push(...loadedNotifs); }
 
       console.log('[PostgresStore] Successfully loaded all entities into memory.');
     } catch (loadErr) {

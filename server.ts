@@ -28,7 +28,7 @@ import {
   SEED_MESSAGES
 } from './src/data/completeSeedDataset.js';
 import { postgresStore } from './server/db/postgresStore.js';
-import { hydrateStoreFromPostgres } from './server/store.js';
+import { hydrateStoreFromPostgres, notifications, type Notification } from './server/store.js';
 import { uploadFileToCloudStorage } from './server/cloudStorage.js';
 
 dotenv.config();
@@ -4929,6 +4929,16 @@ app.post('/api/reviews', requireAuth, (req, res) => {
   // Dynamically update target user's rating and reviewsCount using public reviews
   recalculateUserRating(resolvedTargetUserId);
 
+  createNotification({
+    userId: resolvedTargetUserId,
+    type: 'review',
+    title: 'New Review Received',
+    message: `${caller.name} left a ${numRating}-star review for order "${order.title}".`,
+    link: `/orders/${order.id}`,
+    dedupKey: `review_${newReview.id}`,
+    actorId: caller.id
+  });
+
   // Broadcast system message to workstream
   const sysMsg: Message = {
     id: 'msg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
@@ -5555,6 +5565,18 @@ app.post('/api/messages', requireAuth, (req, res) => {
     recordMessage(newMsg);
     saveMessagesToDisk();
     broadcastMessage(newMsg, order.id);
+
+    const otherUserId = order.buyerId === caller.id ? order.sellerId : order.buyerId;
+    createNotification({
+      userId: otherUserId,
+      type: 'message',
+      title: 'New Message',
+      message: `${caller.name} sent a message regarding order "${order.title}".`,
+      link: `/orders/${order.id}`,
+      dedupKey: `msg_${newMsg.id}`,
+      actorId: caller.id
+    });
+
     res.json(newMsg);
   } catch (err: any) {
     res.status(400).json({ error: err.message || 'Failed to send message' });
@@ -6050,6 +6072,17 @@ app.post('/api/proposals', requireAuth, (req, res) => {
   proj.proposalsCount += 1;
   saveProjectsToDisk();
   saveProposalsToDisk();
+
+  createNotification({
+    userId: proj.buyerId,
+    type: 'proposal',
+    title: 'New Proposal Received',
+    message: `${caller.name} submitted a $${bidAmount} proposal for your project "${proj.title}".`,
+    link: `/projects/${proj.id}`,
+    dedupKey: `proposal_${newProp.id}`,
+    actorId: caller.id
+  });
+
   res.json(newProp);
 });
 
@@ -7397,6 +7430,84 @@ function disconnectUserSockets(userId: string, reason = 'Session invalidated') {
     }
   }
 }
+
+export function broadcastNotificationToUser(userId: string, notification: Notification) {
+  for (const client of clients) {
+    if ((client as any).isAuthenticated && (client as any).authenticatedUserId === userId && client.readyState === WebSocket.OPEN) {
+      try {
+        client.send(JSON.stringify({ type: 'NOTIFICATION', notification }));
+      } catch {}
+    }
+  }
+}
+
+export async function createNotification({
+  userId,
+  type,
+  title,
+  message,
+  link,
+  dedupKey,
+  actorId
+}: {
+  userId: string;
+  type: string;
+  title: string;
+  message: string;
+  link?: string;
+  dedupKey?: string;
+  actorId?: string;
+}) {
+  if (actorId && actorId === userId) return;
+  if (!userId) return;
+
+  if (dedupKey) {
+    const existing = notifications.find(n => n.userId === userId && n.dedupKey === dedupKey);
+    if (existing) return;
+  }
+
+  const newNotif: Notification = {
+    id: `notif_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
+    userId,
+    type,
+    title,
+    message,
+    link: link || '#',
+    read: false,
+    createdAt: new Date().toISOString(),
+    dedupKey: dedupKey || undefined
+  };
+
+  notifications.unshift(newNotif);
+  await postgresStore.saveNotification(newNotif).catch(err => console.error('[PostgresStore] Failed to save notification:', err));
+  broadcastNotificationToUser(userId, newNotif);
+}
+
+app.get('/api/notifications', requireAuth, (req, res) => {
+  const userId = (req as any).user.id;
+  const userNotifs = notifications.filter(n => n.userId === userId);
+  res.json(userNotifs);
+});
+
+app.post('/api/notifications/:id/read', requireAuth, (req, res) => {
+  const userId = (req as any).user.id;
+  const notifId = req.params.id;
+  const notif = notifications.find(n => n.id === notifId && n.userId === userId);
+  if (notif) {
+    notif.read = true;
+    postgresStore.markNotificationRead(notifId, userId).catch(err => console.error('[PostgresStore] Failed to mark notification read:', err));
+  }
+  res.json({ success: true });
+});
+
+app.post('/api/notifications/read-all', requireAuth, (req, res) => {
+  const userId = (req as any).user.id;
+  notifications.forEach(n => {
+    if (n.userId === userId) n.read = true;
+  });
+  postgresStore.markAllNotificationsRead(userId).catch(err => console.error('[PostgresStore] Failed to mark all notifications read:', err));
+  res.json({ success: true });
+});
 
 const clients = new Set<WebSocket>();
 

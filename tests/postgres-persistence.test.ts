@@ -38,6 +38,25 @@ async function runTest() {
     console.error('[FAIL] PostgreSQL persistence test failed: order not found after restart.');
     process.exit(1);
   }
+
+  // Now delete the order and save
+  const index = orders.findIndex(o => o.id === testOrderId);
+  if (index !== -1) {
+    orders.splice(index, 1);
+  }
+  await saveOrdersToDisk();
+
+  // Re-hydrate again to assert deletion
+  orders.length = 0;
+  await hydrateStoreFromPostgres();
+
+  const foundAfterDelete = orders.find(o => o.id === testOrderId);
+  if (!foundAfterDelete) {
+    console.log('[PASS] PostgreSQL deletion test passed: order stayed deleted after restart.');
+  } else {
+    console.error('[FAIL] PostgreSQL deletion test failed: order still exists after deletion and restart.');
+    process.exit(1);
+  }
 }
 
 runTest().catch(err => {

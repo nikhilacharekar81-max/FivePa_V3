@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   Bell, Briefcase, ChevronDown, FileText, Heart, HelpCircle, LayoutDashboard,
-  LogOut, Mail, Pencil, PlusCircle, Search, Settings, Sparkles, User, Users, Wallet
+  LogOut, Mail, Pencil, PlusCircle, Search, Settings, Sparkles, User, Users, Wallet,
+  Volume2, VolumeX
 } from 'lucide-react';
 import { PPH_CATEGORIES } from '../components/HeaderCategoriesNav';
 import { slugify } from '../utils/slugify';
@@ -50,14 +51,118 @@ export function Header({
   };
 
   // Close dropdowns on outside click
+  const [notifications, setNotifications] = useState<any[]>([]);
+  const [isNotificationsDropdownOpen, setIsNotificationsDropdownOpen] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState(() => 
+    typeof window !== 'undefined' ? localStorage.getItem('worksphere_notif_sound') !== 'false' : true
+  );
+
+  const playNotificationSound = () => {
+    try {
+      const soundOn = typeof window !== 'undefined' ? localStorage.getItem('worksphere_notif_sound') !== 'false' : true;
+      if (!soundOn) return;
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      if (ctx.state === 'suspended') { ctx.resume(); }
+      const now = ctx.currentTime;
+      const osc1 = ctx.createOscillator();
+      const gain1 = ctx.createGain();
+      osc1.type = 'sine';
+      osc1.frequency.setValueAtTime(587.33, now);
+      gain1.gain.setValueAtTime(0.2, now);
+      gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+      osc1.connect(gain1);
+      gain1.connect(ctx.destination);
+      osc1.start(now);
+      osc1.stop(now + 0.15);
+
+      const osc2 = ctx.createOscillator();
+      const gain2 = ctx.createGain();
+      osc2.type = 'sine';
+      osc2.frequency.setValueAtTime(880, now + 0.12);
+      gain2.gain.setValueAtTime(0.25, now + 0.12);
+      gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.38);
+      osc2.connect(gain2);
+      gain2.connect(ctx.destination);
+      osc2.start(now + 0.12);
+      osc2.stop(now + 0.38);
+    } catch {}
+  };
+
+  const toggleSound = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const next = !soundEnabled;
+    setSoundEnabled(next);
+    if (typeof window !== 'undefined') localStorage.setItem('worksphere_notif_sound', String(next));
+  };
+
+  useEffect(() => {
+    if (!currentUser || typeof window === 'undefined') {
+      setNotifications([]);
+      return;
+    }
+    const fetchNotifs = async () => {
+      try {
+        const res = await fetch('/api/notifications', {
+          headers: { 'Authorization': `Bearer ${localStorage.getItem('token') || ''}` }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setNotifications(prev => {
+            const prevUnread = prev.filter(n => !n.read).length;
+            const newUnread = (data as any[]).filter(n => !n.read).length;
+            if (newUnread > prevUnread && prev.length > 0) {
+              playNotificationSound();
+            }
+            return data;
+          });
+        }
+      } catch {}
+    };
+    fetchNotifs();
+    const interval = setInterval(fetchNotifs, 10000);
+    return () => clearInterval(interval);
+  }, [currentUser]);
+
+  const unreadCount = notifications.filter(n => !n.read).length;
+
+  const markAsRead = async (id: string, link?: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    try {
+      await fetch(`/api/notifications/${id}/read`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${typeof window !== 'undefined' ? localStorage.getItem('token') || '' : ''}` }
+      });
+      setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
+    } catch {}
+    if (link) {
+      setIsNotificationsDropdownOpen(false);
+      navigate(link);
+    }
+  };
+
+  const markAllAsRead = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await fetch('/api/notifications/read-all', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${typeof window !== 'undefined' ? localStorage.getItem('token') || '' : ''}` }
+      });
+      setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+    } catch {}
+  };
+
+
   useEffect(() => {
     const handleOutsideClick = () => {
       if (isUserDropdownOpen) setIsUserDropdownOpen(false);
       if (isWorkstreamsDropdownOpen) setIsWorkstreamsDropdownOpen(false);
       if (isHeaderSearchDropdownOpen) setIsHeaderSearchDropdownOpen(false);
       if (isHeaderCategoriesDropdownOpen) setIsHeaderCategoriesDropdownOpen(false);
+      if (isNotificationsDropdownOpen) setIsNotificationsDropdownOpen(false);
     };
-    if (isUserDropdownOpen || isWorkstreamsDropdownOpen || isHeaderSearchDropdownOpen || isHeaderCategoriesDropdownOpen) {
+    if (isUserDropdownOpen || isWorkstreamsDropdownOpen || isHeaderSearchDropdownOpen || isHeaderCategoriesDropdownOpen || isNotificationsDropdownOpen) {
       document.addEventListener('click', handleOutsideClick);
     }
     return () => {
@@ -400,14 +505,85 @@ export function Header({
           )}
         </div>
 
-        <button 
-          onClick={(e) => navigate('/notifications', e)} 
-          className="p-2 text-fiverr-dark hover:text-fiverr-dark rounded-full hover:bg-slate-100 transition-colors relative cursor-pointer"
-          title="Notifications"
-        >
-          <Bell className="w-5 h-5 text-fiverr-dark" />
-          <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full"></span>
-        </button>
+        <div className="relative">
+          <button 
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setIsNotificationsDropdownOpen(!isNotificationsDropdownOpen);
+              setIsUserDropdownOpen(false);
+              setIsWorkstreamsDropdownOpen(false);
+            }} 
+            className="p-2 text-fiverr-dark hover:text-emerald-600 rounded-full hover:bg-slate-100 transition-colors relative cursor-pointer"
+            title="Notifications"
+          >
+            <Bell className="w-5 h-5 text-fiverr-dark" />
+            {unreadCount > 0 && (
+              <span className="absolute top-1 right-1 px-1.5 py-0.5 bg-red-500 text-white font-bold text-[10px] rounded-full min-w-4 text-center leading-none">
+                {unreadCount > 9 ? '9+' : unreadCount}
+              </span>
+            )}
+          </button>
+
+          {isNotificationsDropdownOpen && (
+            <div className="absolute right-0 mt-2 w-80 sm:w-96 bg-white rounded-2xl shadow-xl border border-slate-200/80 py-3 z-50 text-left animate-in fade-in-50 zoom-in-95 duration-150">
+              <div className="flex items-center justify-between px-4 pb-3 border-b border-slate-100">
+                <div className="flex items-center gap-2">
+                  <h3 className="font-bold text-sm text-fiverr-dark">Notifications</h3>
+                  {unreadCount > 0 && (
+                    <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 text-[11px] font-bold rounded-full">
+                      {unreadCount} unread
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={toggleSound}
+                    className="p-1.5 text-slate-500 hover:text-emerald-600 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
+                    title={soundEnabled ? 'Mute notification sound' : 'Enable notification sound'}
+                  >
+                    {soundEnabled ? <Volume2 className="w-4 h-4 text-emerald-600" /> : <VolumeX className="w-4 h-4 text-slate-400" />}
+                  </button>
+                  {unreadCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={markAllAsRead}
+                      className="text-[11px] font-bold text-emerald-600 hover:text-emerald-700 hover:underline cursor-pointer"
+                    >
+                      Mark all read
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="max-h-80 overflow-y-auto divide-y divide-slate-100">
+                {notifications.length === 0 ? (
+                  <div className="py-8 text-center text-slate-400 text-xs">
+                    No notifications yet. You're all caught up!
+                  </div>
+                ) : (
+                  notifications.map(n => (
+                    <div 
+                      key={n.id} 
+                      onClick={(e) => markAsRead(n.id, n.link, e)}
+                      className={`p-3.5 hover:bg-slate-50 transition-colors cursor-pointer flex gap-3 ${!n.read ? 'bg-emerald-50/40' : ''}`}
+                    >
+                      <div className={`w-2 h-2 rounded-full mt-1.5 shrink-0 ${!n.read ? 'bg-emerald-500' : 'bg-transparent'}`}></div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-bold text-fiverr-dark truncate">{n.title}</p>
+                        <p className="text-[11.5px] text-slate-600 mt-0.5 line-clamp-2">{n.message}</p>
+                        <span className="text-[10px] text-slate-400 mt-1 block">
+                          {new Date(n.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} • {new Date(n.createdAt).toLocaleDateString()}
+                        </span>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
+        </div>
 
         {!currentUser ? (
           <div className="flex items-center gap-1.5 sm:gap-2">

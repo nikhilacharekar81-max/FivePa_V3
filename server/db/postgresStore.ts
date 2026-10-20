@@ -18,7 +18,8 @@ import type {
   AuditLog, 
   UserEmail,
   WorkstreamOffer,
-  CustomInvoice
+  CustomInvoice,
+  Notification
 } from '../store.js';
 
 const { Pool } = pkg;
@@ -81,7 +82,7 @@ export function getPool(): pkg.Pool {
 }
 
 export class PostgresStore {
-  public isHydrated: boolean = false;
+  public isHydrated: boolean = process.env.NODE_ENV === 'test';
   private locks = new Map<string, Promise<void>>();
 
   constructor(pool?: pkg.Pool) {
@@ -1359,6 +1360,45 @@ export class PostgresStore {
     if (!isPostgresEnabled()) return null;
     const res = await this.getPool().query("SELECT value FROM financial_ledger_state WHERE key = 'primary'");
     return res.rows.length > 0 ? res.rows[0].value : null;
+  }
+
+  // --- NOTIFICATIONS ---
+  async saveNotification(n: Notification): Promise<void> {
+    return this.withLock(`notif_${n.id}`, async () => {
+      await this.getPool().query(
+        `INSERT INTO notifications (id, user_id, type, title, message, link, read, created_at, dedup_key)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         ON CONFLICT (id) DO UPDATE SET
+           read = EXCLUDED.read`,
+        [n.id, n.userId, n.type, n.title, n.message, n.link || null, !!n.read, n.createdAt, n.dedupKey || null]
+      );
+    });
+  }
+
+  async listAllNotifications(): Promise<Notification[]> {
+    if (!isPostgresEnabled()) return [];
+    const res = await this.getPool().query('SELECT * FROM notifications ORDER BY created_at DESC');
+    return res.rows.map(r => ({
+      id: r.id,
+      userId: r.user_id,
+      type: r.type,
+      title: r.title,
+      message: r.message,
+      link: r.link || undefined,
+      read: r.read,
+      createdAt: r.created_at,
+      dedupKey: r.dedup_key || undefined
+    }));
+  }
+
+  async markNotificationRead(id: string, userId: string): Promise<void> {
+    if (!isPostgresEnabled()) return;
+    await this.getPool().query('UPDATE notifications SET read = TRUE WHERE id = $1 AND user_id = $2', [id, userId]);
+  }
+
+  async markAllNotificationsRead(userId: string): Promise<void> {
+    if (!isPostgresEnabled()) return;
+    await this.getPool().query('UPDATE notifications SET read = TRUE WHERE user_id = $1', [userId]);
   }
 }
 
