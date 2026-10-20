@@ -1,0 +1,48 @@
+{
+  "production": {
+    "paypal": {
+      "enabled": false,
+      "clientId": "",
+      "clientSecret": "",
+      "webhookId": "",
+      "primary": true
+    },
+    "stripe": {
+      "enabled": false,
+      "clientId": "",
+      "clientSecret": "",
+      "webhookId": "",
+      "primary": false
+    },
+    "razorpay": {
+      "enabled": false,
+      "clientId": "",
+      "clientSecret": "",
+      "webhookId": "",
+      "primary": false
+    }
+  },
+  "sandbox": {
+    "paypal": {
+      "enabled": false,
+      "clientId": "",
+      "clientSecret": "",
+      "webhookId": "",
+      "primary": true
+    },
+    "stripe": {
+      "enabled": false,
+      "clientId": "",
+      "clientSecret": "",
+      "webhookId": "",
+      "primary": false
+    },
+    "razorpay": {
+      "enabled": false,
+      "clientId": "",
+      "clientSecret": "",
+      "webhookId": "",
+      "primary": false
+    }
+  }
+}

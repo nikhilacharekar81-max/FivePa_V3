@@ -1,0 +1,45 @@
+[
+  {
+    "id": "off_ecadd33e-1d3",
+    "number": "PRP-1001",
+    "orderId": "ord_102",
+    "kind": "proposal",
+    "title": "Hi new proposal",
+    "amount": 878,
+    "deliveryDays": 87,
+    "note": "i am sending you new proposal please accept this",
+    "status": "pending",
+    "createdBy": "user_2",
+    "createdAt": "2026-10-19T15:11:16.009Z"
+  },
+  {
+    "id": "off_750b4dd7-253",
+    "number": "PRP-1002",
+    "orderId": "ord_d9e1eb22-ce1",
+    "proposalId": "prop_1792430969158_3rqw",
+    "kind": "proposal",
+    "title": "Custom LLM Prompt Engineering for Legal Document Analysis",
+    "amount": 1800,
+    "deliveryDays": 8,
+    "note": "1234 0 - Can i work on your project please accept me",
+    "status": "pending",
+    "createdBy": "user_2",
+    "createdAt": "2026-10-19T17:30:27.216Z"
+  },
+  {
+    "id": "off_f7cb1cf6-b1e",
+    "number": "PRP-1003",
+    "orderId": "ord_0337ae21-8fa",
+    "proposalId": "prop_1792472524502_esgy",
+    "kind": "proposal",
+    "title": "Test Project",
+    "amount": 100,
+    "deliveryDays": 7,
+    "note": "hi",
+    "status": "accepted",
+    "createdBy": "user_3",
+    "createdAt": "2026-10-20T05:02:04.588Z",
+    "resolvedAt": "2026-10-20T05:02:04.599Z",
+    "resolvedBy": "user_1"
+  }
+]

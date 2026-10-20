@@ -1,0 +1,122 @@
+[
+  {
+    "id": "inv_1792471667266",
+    "invoiceNumber": "INV-667266",
+    "userId": "user_1",
+    "recipientName": "Client",
+    "recipientEmail": "client@example.com",
+    "title": "Test",
+    "issueDate": "2026-10-20",
+    "dueDate": "2026-11-03",
+    "status": "unpaid",
+    "items": [
+      {
+        "description": "Test",
+        "quantity": 1,
+        "unitPrice": 100,
+        "amount": 100
+      }
+    ],
+    "subtotal": 100,
+    "platformFee": 0,
+    "tax": 0,
+    "total": 100,
+    "notes": "Standard WorkPerHour Invoice"
+  },
+  {
+    "id": "inv_1792466665312",
+    "invoiceNumber": "INV-665312",
+    "userId": "user_1",
+    "recipientName": "Client",
+    "recipientEmail": "client@example.com",
+    "title": "Test",
+    "issueDate": "2026-10-20",
+    "dueDate": "2026-11-03",
+    "status": "unpaid",
+    "items": [
+      {
+        "description": "Test",
+        "quantity": 1,
+        "unitPrice": 100,
+        "amount": 100
+      }
+    ],
+    "subtotal": 100,
+    "platformFee": 0,
+    "tax": 0,
+    "total": 100,
+    "notes": "Standard WorkPerHour Invoice"
+  },
+  {
+    "id": "inv_1792437015993",
+    "invoiceNumber": "INV-015993",
+    "userId": "user_1",
+    "recipientName": "Client",
+    "recipientEmail": "client@example.com",
+    "title": "Test",
+    "issueDate": "2026-10-19",
+    "dueDate": "2026-11-02",
+    "status": "unpaid",
+    "items": [
+      {
+        "description": "Test",
+        "quantity": 1,
+        "unitPrice": 100,
+        "amount": 100
+      }
+    ],
+    "subtotal": 100,
+    "platformFee": 0,
+    "tax": 0,
+    "total": 100,
+    "notes": "Standard WorkPerHour Invoice"
+  },
+  {
+    "id": "inv_1792432709655",
+    "invoiceNumber": "INV-709655",
+    "userId": "user_1",
+    "recipientName": "Client",
+    "recipientEmail": "client@example.com",
+    "title": "Test",
+    "issueDate": "2026-10-19",
+    "dueDate": "2026-11-02",
+    "status": "unpaid",
+    "items": [
+      {
+        "description": "Test",
+        "quantity": 1,
+        "unitPrice": 100,
+        "amount": 100
+      }
+    ],
+    "subtotal": 100,
+    "platformFee": 0,
+    "tax": 0,
+    "total": 100,
+    "notes": "Standard WorkPerHour Invoice"
+  },
+  {
+    "id": "inv_1792431498105",
+    "invoiceNumber": "INV-498105",
+    "userId": "user_1",
+    "recipientName": "Client",
+    "recipientEmail": "client@example.com",
+    "title": "Test",
+    "issueDate": "2026-10-19",
+    "dueDate": "2026-11-02",
+    "status": "unpaid",
+    "items": [
+      {
+        "description": "Test",
+        "quantity": 1,
+        "unitPrice": 100,
+        "amount": 100
+      }
+    ],
+    "subtotal": 100,
+    "platformFee": 0,
+    "tax": 0,
+    "total": 100,
+    "notes": "Standard WorkPerHour Invoice"
+  }
+]

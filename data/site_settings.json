@@ -1,0 +1,118 @@
+{
+  "website": {
+    "siteName": "WorkPerHour",
+    "siteTagline": "Hire Top Freelancers & Discover Quality Services",
+    "supportEmail": "support@workperhour.com",
+    "contactPhone": "+1 (800) 555-WORK",
+    "helpdeskUrl": "https://support.workperhour.com",
+    "maintenanceMode": false,
+    "copyrightText": "© 2026 WorkPerHour Inc. All rights reserved."
+  },
+  "commission": {
+    "commissionPercent": 20,
+    "buyerProcessingFeePercent": 5.5,
+    "smallOrderFeeAmount": 3.5,
+    "smallOrderFeeThreshold": 200,
+    "refundClientFeesOnFullRefund": true,
+    "minimumOrderAmount": 10,
+    "escrowProtectionDays": 14,
+    "commissionDeductionTiming": "on_escrow_release"
+  },
+  "memberships": {
+    "membershipsEnabled": true,
+    "freelancerPlans": [
+      {
+        "id": "plan_free",
+        "name": "Standard Freelancer",
+        "priceMonthly": 0,
+        "bidsPerMonth": 15,
+        "commissionDiscountPercent": 0,
+        "featuredBadge": false,
+        "enabled": true
+      },
+      {
+        "id": "plan_pro",
+        "name": "WorkPerHour Pro Talent",
+        "priceMonthly": 29,
+        "bidsPerMonth": 80,
+        "commissionDiscountPercent": 2,
+        "featuredBadge": true,
+        "enabled": true
+      }
+    ],
+    "buyerPlans": [
+      {
+        "id": "buyer_free",
+        "name": "Standard Client",
+        "priceMonthly": 0,
+        "jobPostsPerMonth": 10,
+        "zeroBuyerFee": false,
+        "enabled": true
+      },
+      {
+        "id": "buyer_enterprise",
+        "name": "Enterprise Client",
+        "priceMonthly": 99,
+        "jobPostsPerMonth": 999,
+        "zeroBuyerFee": true,
+        "enabled": true
+      }
+    ]
+  },
+  "marketplace": {
+    "gigModerationRequired": false,
+    "projectModerationRequired": false,
+    "minimumGigPrice": 10,
+    "maximumGigPrice": 10000,
+    "minimumProjectBudget": 20,
+    "maximumProjectBudget": 50000,
+    "maxActiveOrdersPerFreelancer": 0,
+    "autoCompleteDeliveredDays": 3,
+    "autoCompleteDeliveredEnabled": true,
+    "allowBuyerCancellationRequests": true
+  },
+  "wallets": {
+    "minimumWithdrawalAmount": 50,
+    "maximumWithdrawalPerTransaction": 5000,
+    "dailyWithdrawalLimit": 10000,
+    "payoutProcessingSchedule": "manual_review_over_threshold",
+    "manualReviewThresholdAmount": 500,
+    "platformCoversGatewayFees": true,
+    "allowedPayoutMethods": {
+      "upi": true,
+      "bankTransfer": true,
+      "stripeConnect": true,
+      "razorpayX": true,
+      "paypal": true
+    },
+    "depositHoldDaysBeforeWithdraw": 0
+  },
+  "localization": {
+    "defaultCurrency": "USD",
+    "currencySymbolPlacement": "before",
+    "decimalPlaces": 2,
+    "primaryLanguage": "en_US",
+    "dateFormat": "YYYY-MM-DD",
+    "timezone": "UTC"
+  },
+  "security": {
+    "allowNewRegistrations": true,
+    "requireEmailVerification": false,
+    "requireKycForPayouts": true,
+    "requireAdmin2FA": true,
+    "maxFailedLoginsLockout": 5,
+    "sessionTimeoutMinutes": 60,
+    "minPasswordLength": 8
+  },
+  "integrations": {
+    "emailSenderName": "WorkPerHour Notifications",
+    "emailSenderAddress": "notifications@workperhour.com",
+    "sendWelcomeEmail": true,
+    "sendOrderStatusEmails": true,
+    "sendPayoutStatusEmails": true,
+    "sendDisputeAdminAlerts": true,
+    "stripeEnabled": true,
+    "stripePublishableKeyMasked": "pk_test_51Mz...••••",
+    "razorpayEnabled": true
+  }
+}
