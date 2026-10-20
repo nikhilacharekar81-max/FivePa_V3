@@ -26,6 +26,11 @@ const { Pool } = pkg;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+export function isPostgresEnabled(): boolean {
+  if (process.env.NODE_ENV === 'production') return true;
+  return !!process.env.SQL_HOST;
+}
+
 export function getDatabaseName(): string {
   if (process.env.NODE_ENV === 'test') {
     return 'cloud_sql_test_database';
@@ -66,6 +71,9 @@ declare global {
 }
 
 export function getPool(): pkg.Pool {
+  if (!isPostgresEnabled()) {
+    throw new Error('Postgres pool requested when Postgres is not enabled.');
+  }
   if (!global._appPostgresPool) {
     global._appPostgresPool = createPgPool();
   }
@@ -73,12 +81,14 @@ export function getPool(): pkg.Pool {
 }
 
 export class PostgresStore {
-  private pool: pkg.Pool;
+  private pool!: pkg.Pool;
   public isHydrated: boolean = false;
   private locks = new Map<string, Promise<void>>();
 
   constructor(pool?: pkg.Pool) {
-    this.pool = pool || getPool();
+    if (isPostgresEnabled()) {
+      this.pool = pool || getPool();
+    }
   }
 
   getPool(): pkg.Pool {

@@ -48,10 +48,10 @@ const ALGORITHM = 'aes-256-cbc';
 function getEncryptionKey(): Buffer {
   const keyHex = process.env.GATEWAY_ENCRYPTION_KEY;
   if (!keyHex || keyHex.trim() === '') {
-    if (process.env.NODE_ENV === 'test') {
-      return crypto.createHash('sha256').update('test_gateway_encryption_secret_key').digest();
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('CRITICAL: GATEWAY_ENCRYPTION_KEY secret is required in production.');
     }
-    throw new Error('CRITICAL: GATEWAY_ENCRYPTION_KEY secret is required in environment variables.');
+    return crypto.createHash('sha256').update('dev_mode_fixed_gateway_encryption_key_12345').digest();
   }
   return crypto.createHash('sha256').update(keyHex).digest();
 }

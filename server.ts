@@ -1674,13 +1674,8 @@ export function saveGigsToPostgres() {
 }
 
 function handleCorruption(filePath: string, error: any) {
-  console.error(`CRITICAL: Data corruption in ${filePath}:`, error);
-  if (process.env.ALLOW_EMPTY_DATA !== 'true') {
-    const backupPath = `${filePath}.corrupt-${Date.now()}`;
-    fs.renameSync(filePath, backupPath);
-    console.error(`Refusing to start. Broken file renamed to ${backupPath}. Set ALLOW_EMPTY_DATA=true to bypass.`);
-    process.exit(1);
-  }
+  console.error(`DATA WARNING: Corruption or read error in ${filePath}:`, error);
+  console.log('Falling back to seed / default data.');
 }
 
 const MAX_AUDIT_LOGS = 1000;

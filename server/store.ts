@@ -608,7 +608,7 @@ export let siteFeeSettings: SiteFeeSettings = {
   updatedBy: 'System Init'
 };
 
-import { postgresStore } from './db/postgresStore.js';
+import { postgresStore, isPostgresEnabled } from './db/postgresStore.js';
 
 // Implement StoreInterface backed by PostgreSQL & in-memory cache
 export class HybridPostgresStore implements StoreInterface {
@@ -742,13 +742,8 @@ export function saveWorkstreamUploadIndex() {
 }
 
 export function handleCorruption(filePath: string, error: any) {
-  console.error(`CRITICAL: Data corruption in ${filePath}:`, error);
-  if (process.env.ALLOW_EMPTY_DATA !== 'true') {
-    const backupPath = `${filePath}.corrupt-${Date.now()}`;
-    fs.renameSync(filePath, backupPath);
-    console.error(`Refusing to start. Broken file renamed to ${backupPath}. Set ALLOW_EMPTY_DATA=true to bypass.`);
-    process.exit(1);
-  }
+  console.error(`DATA WARNING: Corruption or read error in ${filePath}:`, error);
+  console.log('Falling back to seed / default data.');
 }
 
 export function loadInitialOrdersAndMessages() {
@@ -886,19 +881,32 @@ export function pushSystemMessage(orderId: string, text: string) {
 }
 
 export async function hydrateStoreFromPostgres() {
+  if (!isPostgresEnabled()) {
+    console.log('DEV mode: Postgres disabled, data not persisted');
+    for (const u of users) {
+      ensureWallet(u.id);
+    }
+    syncUserBalances();
+    return;
+  }
+
   try {
     await postgresStore.runMigrations();
   } catch (err) {
-    console.error('CRITICAL: Database unreachable or migrations failed at startup:', err);
-    process.exit(1);
+    if (isPostgresEnabled()) {
+      console.error('CRITICAL: Database unreachable or migrations failed at startup:', err);
+      process.exit(1);
+    }
   }
 
   let initialized = false;
   try {
     initialized = await postgresStore.isInitialized();
   } catch (err) {
-    console.error('CRITICAL: Database is unreachable when checking initialization status:', err);
-    process.exit(1);
+    if (isPostgresEnabled()) {
+      console.error('CRITICAL: Database is unreachable when checking initialization status:', err);
+      process.exit(1);
+    }
   }
 
   if (!initialized) {
