@@ -28,6 +28,8 @@ import {
   SEED_MESSAGES
 } from './src/data/completeSeedDataset.js';
 import { postgresStore } from './server/db/postgresStore.js';
+import { hydrateStoreFromPostgres } from './server/store.js';
+import { uploadFileToCloudStorage } from './server/cloudStorage.js';
 
 dotenv.config();
 
@@ -5150,7 +5152,14 @@ const WORKSTREAM_INLINE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '
 
 // Upload ownership index: filename -> who uploaded it and when. Persisted so access rules and
 // abandoned-upload cleanup survive restarts.
-interface WorkstreamUploadRecord { ownerId: string; createdAt: string; }
+interface WorkstreamUploadRecord {
+  ownerId: string;
+  originalName?: string;
+  mime?: string;
+  size?: number;
+  createdAt: string;
+  sha256?: string;
+}
 let workstreamUploadIndex: Record<string, WorkstreamUploadRecord> = {};
 try {
   if (fs.existsSync(WORKSTREAM_UPLOAD_INDEX_FILE)) {
@@ -5434,7 +5443,7 @@ app.post('/api/admin/orders/check-auto-accept', requireAdmin, (req, res) => {
     res.status(500).json({ error: err.message || 'Auto-accept check failed' });
   }
 });
-app.post('/api/workstream/upload', requireAuth, rateLimit(5, 60_000), express.raw({ type: '*/*', limit: WORKSTREAM_MAX_UPLOAD_BYTES }), (req, res) => {
+app.post('/api/workstream/upload', requireAuth, rateLimit(5, 60_000), express.raw({ type: '*/*', limit: WORKSTREAM_MAX_UPLOAD_BYTES }), async (req, res) => {
   try {
     const caller = (req as any).authenticatedUser;
     const rawName = (req.query.name as string) || 'attachment';
@@ -5447,7 +5456,6 @@ app.post('/api/workstream/upload', requireAuth, rateLimit(5, 60_000), express.ra
     }
     const nameWithoutExt = path.basename(safeBase, path.extname(safeBase));
     const storedFilename = `${Date.now()}_${randomUUID().slice(0, 8)}_${nameWithoutExt}${ext}`;
-    const filePath = path.join(WORKSTREAM_UPLOADS_DIR, storedFilename);
 
     const buffer = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || '');
     if (!buffer || buffer.length === 0) {
@@ -5457,8 +5465,16 @@ app.post('/api/workstream/upload', requireAuth, rateLimit(5, 60_000), express.ra
       return res.status(413).json({ error: 'File is too large (25 MB maximum).' });
     }
 
-    fs.writeFileSync(filePath, buffer);
-    workstreamUploadIndex[storedFilename] = { ownerId: caller.id, createdAt: new Date().toISOString() };
+    const mimeType = (req.headers['content-type'] as string) || 'application/octet-stream';
+    const fileUrl = await uploadFileToCloudStorage(storedFilename, buffer, mimeType);
+
+    workstreamUploadIndex[storedFilename] = {
+      ownerId: caller.id,
+      originalName: safeBase,
+      mime: mimeType,
+      size: buffer.length,
+      createdAt: new Date().toISOString()
+    };
     saveWorkstreamUploadIndex();
 
     const bytes = buffer.length;
@@ -5466,12 +5482,10 @@ app.post('/api/workstream/upload', requireAuth, rateLimit(5, 60_000), express.ra
       ? `${(bytes / (1024 * 1024)).toFixed(1)} MB`
       : `${Math.max(1, Math.round(bytes / 1024))} KB`;
 
-    const mimeType = (req.headers['content-type'] as string) || 'application/octet-stream';
-
     res.json({
       name: safeBase,
       size: sizeStr,
-      url: `${WORKSTREAM_FILE_URL_PREFIX}${storedFilename}`,
+      url: fileUrl,
       type: mimeType
     });
   } catch (err: any) {
@@ -7543,6 +7557,7 @@ app.get('/sitemap.xml', (_req, res) => {
 
 // SSR and Vite integration
 (async () => {
+  await hydrateStoreFromPostgres();
   await setupSSR(app, IS_PROD, __dirname, () => ({ gigs, users, projects, categories }));
 
   const portArgIndex = process.argv.findIndex(arg => arg === '--port' || arg === '-p');

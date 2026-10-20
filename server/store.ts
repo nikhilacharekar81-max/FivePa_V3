@@ -715,17 +715,29 @@ export async function writeJsonAtomic(filePath: string, data: any) {
 }
 
 export function saveMessagesToDisk() { 
-  postgresStore.saveMessages(messages).catch(err => console.error('[PostgresStore] Failed to save messages:', err));
+  postgresStore.saveMessages(messages).catch(err => {
+    console.error('[PostgresStore ERROR] CRITICAL: Failed to save messages to database:', err);
+    throw err;
+  });
 }
 export function saveOrdersToDisk() { 
-  postgresStore.saveOrders(orders).catch(err => console.error('[PostgresStore] Failed to save orders:', err));
+  postgresStore.saveOrders(orders).catch(err => {
+    console.error('[PostgresStore ERROR] CRITICAL: Failed to save orders to database:', err);
+    throw err;
+  });
 }
 export function saveReviewsToDisk() { 
-  postgresStore.saveReviews(reviews).catch(err => console.error('[PostgresStore] Failed to save reviews:', err));
+  postgresStore.saveReviews(reviews).catch(err => {
+    console.error('[PostgresStore ERROR] CRITICAL: Failed to save reviews to database:', err);
+    throw err;
+  });
 }
 export function saveWorkstreamUploadIndex() {
   for (const [fn, rec] of Object.entries(workstreamUploadIndex)) {
-    postgresStore.saveUploadRecord(fn, rec).catch(err => console.error('[PostgresStore] Failed to save upload record:', err));
+    postgresStore.saveUploadRecord(fn, rec).catch(err => {
+      console.error('[PostgresStore ERROR] CRITICAL: Failed to save upload record to database:', err);
+      throw err;
+    });
   }
 }
 
@@ -873,8 +885,117 @@ export function pushSystemMessage(orderId: string, text: string) {
   return msg;
 }
 
-for (const u of users) {
-  ensureWallet(u.id);
+export async function hydrateStoreFromPostgres() {
+  try {
+    await postgresStore.runMigrations();
+  } catch (err) {
+    console.error('CRITICAL: Database unreachable or migrations failed at startup:', err);
+    process.exit(1);
+  }
+
+  let initialized = false;
+  try {
+    initialized = await postgresStore.isInitialized();
+  } catch (err) {
+    console.error('CRITICAL: Database is unreachable when checking initialization status:', err);
+    process.exit(1);
+  }
+
+  if (!initialized) {
+    console.log('[PostgresStore] Database is empty. Seeding initial dataset...');
+    try {
+      await postgresStore.saveUsers(users);
+      await postgresStore.saveGigs(gigs);
+      await postgresStore.saveProjects(projects);
+      await postgresStore.saveProposals(proposals);
+      await postgresStore.saveOrders(orders);
+      await postgresStore.saveMessages(messages);
+      await postgresStore.saveReviews(reviews);
+      await postgresStore.saveWorkspaces([]);
+      await postgresStore.saveOffers([]);
+      await postgresStore.saveCustomInvoices([]);
+      await postgresStore.saveDisputes([]);
+      await postgresStore.saveRefunds([]);
+      await postgresStore.savePayouts([]);
+      await postgresStore.saveSupportTickets([]);
+      await postgresStore.saveAuditLogs([]);
+      await postgresStore.saveUserEmails([]);
+      await postgresStore.saveSiteSettings(siteFeeSettings);
+      await postgresStore.savePaymentGateways({});
+      await postgresStore.saveLedgerState(financeLedger.getSerializableState());
+      await postgresStore.markInitialized();
+      console.log('[PostgresStore] Seeding completed successfully.');
+    } catch (seedErr) {
+      console.error('CRITICAL: Failed to seed database:', seedErr);
+      process.exit(1);
+    }
+  } else {
+    console.log('[PostgresStore] Loading all entities from Postgres into memory...');
+    try {
+      const loadedUsers = await postgresStore.listUsers();
+      if (loadedUsers.length > 0) { users.length = 0; users.push(...loadedUsers); }
+
+      const loadedGigs = await postgresStore.listGigs();
+      if (loadedGigs.length > 0) { gigs.length = 0; gigs.push(...loadedGigs); }
+
+      const loadedProjects = await postgresStore.listProjects();
+      if (loadedProjects.length > 0) { projects.length = 0; projects.push(...loadedProjects); }
+
+      const loadedProposals = await postgresStore.listProposals();
+      if (loadedProposals.length > 0) { proposals.length = 0; proposals.push(...loadedProposals); }
+
+      const loadedOrders = await postgresStore.listOrders();
+      if (loadedOrders.length > 0) { orders.length = 0; orders.push(...loadedOrders); }
+
+      const loadedMessages = await postgresStore.listMessages();
+      if (loadedMessages.length > 0) { messages.length = 0; messages.push(...loadedMessages); }
+
+      const loadedReviews = await postgresStore.listReviews();
+      if (loadedReviews.length > 0) { reviews.length = 0; reviews.push(...loadedReviews); }
+
+      const loadedDisputes = await postgresStore.listDisputes();
+      if (loadedDisputes.length > 0) { disputes.length = 0; disputes.push(...loadedDisputes); }
+
+      const loadedRefunds = await postgresStore.listRefunds();
+      if (loadedRefunds.length > 0) { refunds.length = 0; refunds.push(...loadedRefunds); }
+
+      const loadedPayouts = await postgresStore.listPayouts();
+      if (loadedPayouts.length > 0) { payouts.length = 0; payouts.push(...loadedPayouts); }
+
+      const loadedTickets = await postgresStore.listSupportTickets();
+      if (loadedTickets.length > 0) { supportTickets.length = 0; supportTickets.push(...loadedTickets); }
+
+      const loadedLogs = await postgresStore.listAuditLogs();
+      if (loadedLogs.length > 0) { auditLogs.length = 0; auditLogs.push(...loadedLogs); }
+
+      const loadedEmails = await postgresStore.listUserEmails();
+      if (loadedEmails.length > 0) { userEmails.length = 0; userEmails.push(...loadedEmails); }
+
+      const loadedUploads = await postgresStore.listUploadRecords();
+      if (loadedUploads && Object.keys(loadedUploads).length > 0) {
+        Object.keys(workstreamUploadIndex).forEach(k => delete workstreamUploadIndex[k]);
+        Object.assign(workstreamUploadIndex, loadedUploads);
+      }
+
+      const loadedSettings = await postgresStore.loadSiteSettings();
+      if (loadedSettings) {
+        Object.assign(siteFeeSettings, loadedSettings);
+      }
+
+      const loadedLedger = await postgresStore.loadLedgerState();
+      if (loadedLedger) {
+        financeLedger.loadFromState(loadedLedger);
+      }
+
+      console.log('[PostgresStore] Successfully loaded all entities into memory.');
+    } catch (loadErr) {
+      console.error('CRITICAL: Failed to load entities from database:', loadErr);
+      process.exit(1);
+    }
+  }
+
+  for (const u of users) {
+    ensureWallet(u.id);
+  }
+  syncUserBalances();
 }
-loadInitialOrdersAndMessages();
-syncUserBalances();

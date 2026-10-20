@@ -46,19 +46,12 @@ const KEY_FILE = path.join(DATA_DIR, '.encryption_key');
 const ALGORITHM = 'aes-256-cbc';
 
 function getEncryptionKey(): Buffer {
-  let keyHex = process.env.GATEWAY_ENCRYPTION_KEY;
-  if (!keyHex) {
-    try {
-      if (fs.existsSync(KEY_FILE)) {
-        keyHex = fs.readFileSync(KEY_FILE, 'utf-8').trim();
-      } else {
-        if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-        keyHex = crypto.randomBytes(32).toString('hex');
-        fs.writeFileSync(KEY_FILE, keyHex, { mode: 0o600 });
-      }
-    } catch {
-      keyHex = crypto.randomBytes(32).toString('hex');
+  const keyHex = process.env.GATEWAY_ENCRYPTION_KEY;
+  if (!keyHex || keyHex.trim() === '') {
+    if (process.env.NODE_ENV === 'test') {
+      return crypto.createHash('sha256').update('test_gateway_encryption_secret_key').digest();
     }
+    throw new Error('CRITICAL: GATEWAY_ENCRYPTION_KEY secret is required in environment variables.');
   }
   return crypto.createHash('sha256').update(keyHex).digest();
 }
