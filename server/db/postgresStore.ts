@@ -27,7 +27,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export function isPostgresEnabled(): boolean {
-  if (process.env.NODE_ENV === 'production') return true;
+  if (process.env.NODE_ENV === 'production' || process.env.NODE_ENV === 'test') return true;
   return !!process.env.SQL_HOST;
 }
 
@@ -81,23 +81,26 @@ export function getPool(): pkg.Pool {
 }
 
 export class PostgresStore {
-  private pool!: pkg.Pool;
   public isHydrated: boolean = false;
   private locks = new Map<string, Promise<void>>();
 
   constructor(pool?: pkg.Pool) {
-    if (isPostgresEnabled()) {
-      this.pool = pool || getPool();
+    if (pool) {
+      (this as any)._customPool = pool;
     }
   }
 
   getPool(): pkg.Pool {
-    return this.pool;
+    if ((this as any)._customPool) return (this as any)._customPool;
+    return getPool();
   }
 
   private withLock(key: string, fn: () => Promise<void>): Promise<void> {
-    if (!this.isHydrated) {
+    if (!isPostgresEnabled()) {
       return Promise.resolve();
+    }
+    if (!this.isHydrated) {
+      throw new Error('save before hydration');
     }
     const prev = this.locks.get(key) || Promise.resolve();
     const next = prev.catch(() => {}).then(fn);
@@ -110,6 +113,7 @@ export class PostgresStore {
   }
 
   async runMigrations(): Promise<void> {
+    if (!isPostgresEnabled()) return;
     const adminPool = createAdminPgPool(getDatabaseName());
     try {
       const migrationPath = path.join(__dirname, 'migration.sql');
@@ -132,8 +136,9 @@ export class PostgresStore {
   }
 
   async isInitialized(): Promise<boolean> {
+    if (!isPostgresEnabled()) return false;
     try {
-      const res = await this.pool.query("SELECT value FROM app_metadata WHERE key = 'seed_initialized'");
+      const res = await this.getPool().query("SELECT value FROM app_metadata WHERE key = 'seed_initialized'");
       return res.rows.length > 0 && !!res.rows[0].value;
     } catch {
       return false;
@@ -141,7 +146,8 @@ export class PostgresStore {
   }
 
   async markInitialized(): Promise<void> {
-    await this.pool.query(
+    if (!isPostgresEnabled()) return;
+    await this.getPool().query(
       `INSERT INTO app_metadata (key, value, updated_at) 
        VALUES ('seed_initialized', $1, NOW())
        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
@@ -151,7 +157,7 @@ export class PostgresStore {
 
   async saveAppMetadata(key: string, value: any): Promise<void> {
     return this.withLock(`meta_${key}`, async () => {
-      await this.pool.query(
+      await this.getPool().query(
         `INSERT INTO app_metadata (key, value, updated_at)
          VALUES ($1, $2, NOW())
          ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
@@ -161,21 +167,18 @@ export class PostgresStore {
   }
 
   async loadAppMetadata<T = any>(key: string): Promise<T | null> {
-    const res = await this.pool.query('SELECT value FROM app_metadata WHERE key = $1', [key]);
+    if (!isPostgresEnabled()) return null;
+    const res = await this.getPool().query('SELECT value FROM app_metadata WHERE key = $1', [key]);
     return res.rows.length > 0 ? (res.rows[0].value as T) : null;
   }
 
   // --- ORDERS ---
   async saveOrders(orders: Order[]): Promise<void> {
     return this.withLock('orders', async () => {
-      if (!orders || orders.length === 0) {
-        await this.pool.query('DELETE FROM orders');
-        return;
-      }
-      const client = await this.pool.connect();
+      if (!orders || orders.length === 0) return;
+      const client = await this.getPool().connect();
       try {
         await client.query('BEGIN');
-        await client.query('DELETE FROM orders');
         const seen = new Set<string>();
         for (const order of orders) {
           if (!order?.id || seen.has(order.id)) continue;
@@ -189,7 +192,44 @@ export class PostgresStore {
               is_timer_paused, fee_breakdown, delivery_history, delivery_notes, delivery_reference, 
               accepted_version, review_window_days, review_window_expires_at, review,
               workspace_id, seller_review, previous_status
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37)`,
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37)
+            ON CONFLICT (id) DO UPDATE SET
+              title = EXCLUDED.title,
+              buyer_id = EXCLUDED.buyer_id,
+              seller_id = EXCLUDED.seller_id,
+              amount = EXCLUDED.amount,
+              status = EXCLUDED.status,
+              created_at = EXCLUDED.created_at,
+              due_date = EXCLUDED.due_date,
+              completed_at = EXCLUDED.completed_at,
+              requirements = EXCLUDED.requirements,
+              deliverables = EXCLUDED.deliverables,
+              deliverable_files = EXCLUDED.deliverable_files,
+              revisions = EXCLUDED.revisions,
+              admin_notes = EXCLUDED.admin_notes,
+              is_muted = EXCLUDED.is_muted,
+              escrow_protection_start_date = EXCLUDED.escrow_protection_start_date,
+              escrow_protection_end_date = EXCLUDED.escrow_protection_end_date,
+              gig_id = EXCLUDED.gig_id,
+              project_id = EXCLUDED.project_id,
+              service_url = EXCLUDED.service_url,
+              gig_slug = EXCLUDED.gig_slug,
+              seller_username = EXCLUDED.seller_username,
+              buyer_username = EXCLUDED.buyer_username,
+              service_title = EXCLUDED.service_title,
+              service_thumbnail = EXCLUDED.service_thumbnail,
+              is_timer_paused = EXCLUDED.is_timer_paused,
+              fee_breakdown = EXCLUDED.fee_breakdown,
+              delivery_history = EXCLUDED.delivery_history,
+              delivery_notes = EXCLUDED.delivery_notes,
+              delivery_reference = EXCLUDED.delivery_reference,
+              accepted_version = EXCLUDED.accepted_version,
+              review_window_days = EXCLUDED.review_window_days,
+              review_window_expires_at = EXCLUDED.review_window_expires_at,
+              review = EXCLUDED.review,
+              workspace_id = EXCLUDED.workspace_id,
+              seller_review = EXCLUDED.seller_review,
+              previous_status = EXCLUDED.previous_status`,
             [
               order.id, order.title, order.buyerId, order.sellerId, order.amount, order.status,
               order.createdAt, order.dueDate, order.completedAt || null, order.requirements || null,
@@ -217,7 +257,8 @@ export class PostgresStore {
   }
 
   async listOrders(): Promise<Order[]> {
-    const res = await this.pool.query('SELECT * FROM orders ORDER BY created_at DESC');
+    if (!isPostgresEnabled()) return [];
+    const res = await this.getPool().query('SELECT * FROM orders ORDER BY created_at DESC');
     return res.rows.map(r => ({
       id: r.id,
       title: r.title,
@@ -262,14 +303,10 @@ export class PostgresStore {
   // --- MESSAGES ---
   async saveMessages(messages: Message[]): Promise<void> {
     return this.withLock('messages', async () => {
-      if (!messages || messages.length === 0) {
-        await this.pool.query('DELETE FROM messages');
-        return;
-      }
-      const client = await this.pool.connect();
+      if (!messages || messages.length === 0) return;
+      const client = await this.getPool().connect();
       try {
         await client.query('BEGIN');
-        await client.query('DELETE FROM messages');
         const seen = new Set<string>();
         for (const m of messages) {
           if (!m?.id || seen.has(m.id)) continue;
@@ -303,7 +340,8 @@ export class PostgresStore {
   }
 
   async listMessages(): Promise<Message[]> {
-    const res = await this.pool.query('SELECT * FROM messages ORDER BY timestamp ASC');
+    if (!isPostgresEnabled()) return [];
+    const res = await this.getPool().query('SELECT * FROM messages ORDER BY timestamp ASC');
     return res.rows.map(r => ({
       id: r.id,
       orderId: r.order_id,
@@ -311,7 +349,7 @@ export class PostgresStore {
       senderName: r.sender_name,
       text: r.text,
       timestamp: r.timestamp,
-      type: r.type,
+      type: r.type || undefined,
       fileInfo: r.file_info || undefined,
       metadata: r.metadata || undefined
     }));
@@ -320,14 +358,10 @@ export class PostgresStore {
   // --- REVIEWS ---
   async saveReviews(reviews: Review[]): Promise<void> {
     return this.withLock('reviews', async () => {
-      if (!reviews || reviews.length === 0) {
-        await this.pool.query('DELETE FROM reviews');
-        return;
-      }
-      const client = await this.pool.connect();
+      if (!reviews || reviews.length === 0) return;
+      const client = await this.getPool().connect();
       try {
         await client.query('BEGIN');
-        await client.query('DELETE FROM reviews');
         const seen = new Set<string>();
         for (const r of reviews) {
           if (!r?.id || seen.has(r.id)) continue;
@@ -336,7 +370,23 @@ export class PostgresStore {
             `INSERT INTO reviews (
               id, order_id, reviewer_id, reviewer_name, reviewer_avatar, target_user_id, 
               rating, comment, order_title, gig_id, project_id, created_at, updated_at, is_cancelled_order, reply, moderation_status
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+            ON CONFLICT (id) DO UPDATE SET
+              order_id = EXCLUDED.order_id,
+              reviewer_id = EXCLUDED.reviewer_id,
+              reviewer_name = EXCLUDED.reviewer_name,
+              reviewer_avatar = EXCLUDED.reviewer_avatar,
+              target_user_id = EXCLUDED.target_user_id,
+              rating = EXCLUDED.rating,
+              comment = EXCLUDED.comment,
+              order_title = EXCLUDED.order_title,
+              gig_id = EXCLUDED.gig_id,
+              project_id = EXCLUDED.project_id,
+              created_at = EXCLUDED.created_at,
+              updated_at = EXCLUDED.updated_at,
+              is_cancelled_order = EXCLUDED.is_cancelled_order,
+              reply = EXCLUDED.reply,
+              moderation_status = EXCLUDED.moderation_status`,
             [
               r.id, r.orderId || null, r.reviewerId || null, r.reviewerName || null, r.reviewerAvatar || null,
               r.targetUserId || null, r.rating, r.comment || null, r.orderTitle || null, r.gigId || null,
@@ -356,7 +406,8 @@ export class PostgresStore {
   }
 
   async listReviews(): Promise<Review[]> {
-    const res = await this.pool.query('SELECT * FROM reviews ORDER BY created_at DESC');
+    if (!isPostgresEnabled()) return [];
+    const res = await this.getPool().query('SELECT * FROM reviews ORDER BY created_at DESC');
     return res.rows.map(r => ({
       id: r.id,
       orderId: r.order_id || undefined,
@@ -380,14 +431,10 @@ export class PostgresStore {
   // --- USERS ---
   async saveUsers(users: User[]): Promise<void> {
     return this.withLock('users', async () => {
-      if (!users || users.length === 0) {
-        await this.pool.query('DELETE FROM users');
-        return;
-      }
-      const client = await this.pool.connect();
+      if (!users || users.length === 0) return;
+      const client = await this.getPool().connect();
       try {
         await client.query('BEGIN');
-        await client.query('DELETE FROM users');
         const seen = new Set<string>();
         for (const u of users) {
           if (!u?.id || seen.has(u.id)) continue;
@@ -398,7 +445,34 @@ export class PostgresStore {
               hourly_rate, earned, completed_jobs, bio, skills, status, verified, email_verified, 
               mobile_verified, wallet_balance, created_at, is_flagged, flag_reason, password, 
               session_version, known_devices, is_available_now
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)`,
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
+            ON CONFLICT (id) DO UPDATE SET
+              name = EXCLUDED.name,
+              username = EXCLUDED.username,
+              email = EXCLUDED.email,
+              mobile = EXCLUDED.mobile,
+              role = EXCLUDED.role,
+              avatar = EXCLUDED.avatar,
+              title = EXCLUDED.title,
+              rating = EXCLUDED.rating,
+              reviews_count = EXCLUDED.reviews_count,
+              hourly_rate = EXCLUDED.hourly_rate,
+              earned = EXCLUDED.earned,
+              completed_jobs = EXCLUDED.completed_jobs,
+              bio = EXCLUDED.bio,
+              skills = EXCLUDED.skills,
+              status = EXCLUDED.status,
+              verified = EXCLUDED.verified,
+              email_verified = EXCLUDED.email_verified,
+              mobile_verified = EXCLUDED.mobile_verified,
+              wallet_balance = EXCLUDED.wallet_balance,
+              created_at = EXCLUDED.created_at,
+              is_flagged = EXCLUDED.is_flagged,
+              flag_reason = EXCLUDED.flag_reason,
+              password = EXCLUDED.password,
+              session_version = EXCLUDED.session_version,
+              known_devices = EXCLUDED.known_devices,
+              is_available_now = EXCLUDED.is_available_now`,
             [
               u.id, u.name, u.username || null, u.email, u.mobile || null, u.role, u.avatar || null,
               u.title || null, u.rating ?? 5.0, u.reviewsCount ?? 0, u.hourlyRate ?? 0, u.earned ?? 0,
@@ -421,7 +495,8 @@ export class PostgresStore {
   }
 
   async listUsers(): Promise<User[]> {
-    const res = await this.pool.query('SELECT * FROM users');
+    if (!isPostgresEnabled()) return [];
+    const res = await this.getPool().query('SELECT * FROM users');
     return res.rows.map(r => ({
       id: r.id,
       name: r.name,
@@ -456,14 +531,10 @@ export class PostgresStore {
   // --- GIGS ---
   async saveGigs(gigs: Gig[]): Promise<void> {
     return this.withLock('gigs', async () => {
-      if (!gigs || gigs.length === 0) {
-        await this.pool.query('DELETE FROM gigs');
-        return;
-      }
-      const client = await this.pool.connect();
+      if (!gigs || gigs.length === 0) return;
+      const client = await this.getPool().connect();
       try {
         await client.query('BEGIN');
-        await client.query('DELETE FROM gigs');
         const seen = new Set<string>();
         for (const g of gigs) {
           if (!g?.id || seen.has(g.id)) continue;
@@ -474,7 +545,28 @@ export class PostgresStore {
               freelancer_level, title, slug, category, subcategory, description, price, 
               delivery_days, rating, reviews_count, image, status, featured, extras, 
               moderation_status, moderation_notes
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`,
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+            ON CONFLICT (id) DO UPDATE SET
+              freelancer_id = EXCLUDED.freelancer_id,
+              freelancer_name = EXCLUDED.freelancer_name,
+              freelancer_username = EXCLUDED.freelancer_username,
+              freelancer_avatar = EXCLUDED.freelancer_avatar,
+              freelancer_level = EXCLUDED.freelancer_level,
+              title = EXCLUDED.title,
+              slug = EXCLUDED.slug,
+              category = EXCLUDED.category,
+              subcategory = EXCLUDED.subcategory,
+              description = EXCLUDED.description,
+              price = EXCLUDED.price,
+              delivery_days = EXCLUDED.delivery_days,
+              rating = EXCLUDED.rating,
+              reviews_count = EXCLUDED.reviews_count,
+              image = EXCLUDED.image,
+              status = EXCLUDED.status,
+              featured = EXCLUDED.featured,
+              extras = EXCLUDED.extras,
+              moderation_status = EXCLUDED.moderation_status,
+              moderation_notes = EXCLUDED.moderation_notes`,
             [
               g.id, g.freelancerId, g.freelancerName, g.freelancerUsername || null, g.freelancerAvatar || null,
               g.freelancerLevel || null, g.title, g.slug || null, g.category, g.subcategory || null,
@@ -495,7 +587,8 @@ export class PostgresStore {
   }
 
   async listGigs(): Promise<Gig[]> {
-    const res = await this.pool.query('SELECT * FROM gigs');
+    if (!isPostgresEnabled()) return [];
+    const res = await this.getPool().query('SELECT * FROM gigs');
     return res.rows.map(r => ({
       id: r.id,
       freelancerId: r.freelancer_id,
@@ -516,7 +609,7 @@ export class PostgresStore {
       status: r.status,
       featured: r.featured,
       extras: r.extras || [],
-      moderationStatus: r.moderation_status || 'approved',
+      moderationStatus: r.moderation_status || undefined,
       moderationNotes: r.moderation_notes || undefined
     }));
   }
@@ -524,14 +617,10 @@ export class PostgresStore {
   // --- PROJECTS ---
   async saveProjects(projects: Project[]): Promise<void> {
     return this.withLock('projects', async () => {
-      if (!projects || projects.length === 0) {
-        await this.pool.query('DELETE FROM projects');
-        return;
-      }
-      const client = await this.pool.connect();
+      if (!projects || projects.length === 0) return;
+      const client = await this.getPool().connect();
       try {
         await client.query('BEGIN');
-        await client.query('DELETE FROM projects');
         const seen = new Set<string>();
         for (const p of projects) {
           if (!p?.id || seen.has(p.id)) continue;
@@ -539,13 +628,31 @@ export class PostgresStore {
           await client.query(
             `INSERT INTO projects (
               id, buyer_id, buyer_name, buyer_avatar, title, slug, category, subcategory, 
-              description, budget_min, budget_max, deadline_days, proposals_count, created_at, 
-              status, featured, moderation_status, moderation_notes
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
+              description, budget_min, budget_max, deadline_days, proposals_count, 
+              created_at, status, featured, moderation_status, moderation_notes
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+            ON CONFLICT (id) DO UPDATE SET
+              buyer_id = EXCLUDED.buyer_id,
+              buyer_name = EXCLUDED.buyer_name,
+              buyer_avatar = EXCLUDED.buyer_avatar,
+              title = EXCLUDED.title,
+              slug = EXCLUDED.slug,
+              category = EXCLUDED.category,
+              subcategory = EXCLUDED.subcategory,
+              description = EXCLUDED.description,
+              budget_min = EXCLUDED.budget_min,
+              budget_max = EXCLUDED.budget_max,
+              deadline_days = EXCLUDED.deadline_days,
+              proposals_count = EXCLUDED.proposals_count,
+              created_at = EXCLUDED.created_at,
+              status = EXCLUDED.status,
+              featured = EXCLUDED.featured,
+              moderation_status = EXCLUDED.moderation_status,
+              moderation_notes = EXCLUDED.moderation_notes`,
             [
               p.id, p.buyerId, p.buyerName, p.buyerAvatar || null, p.title, p.slug || null,
-              p.category, p.subcategory || null, p.description || null, p.budgetMin ?? 0, p.budgetMax ?? 0,
-              p.deadlineDays ?? 7, p.proposalsCount ?? 0, p.createdAt || new Date().toISOString(),
+              p.category, p.subcategory || null, p.description || null, p.budgetMin,
+              p.budgetMax, p.deadlineDays, p.proposalsCount ?? 0, p.createdAt,
               p.status || 'open', !!p.featured, p.moderationStatus || 'approved', p.moderationNotes || null
             ]
           );
@@ -561,7 +668,8 @@ export class PostgresStore {
   }
 
   async listProjects(): Promise<Project[]> {
-    const res = await this.pool.query('SELECT * FROM projects');
+    if (!isPostgresEnabled()) return [];
+    const res = await this.getPool().query('SELECT * FROM projects');
     return res.rows.map(r => ({
       id: r.id,
       buyerId: r.buyer_id,
@@ -579,7 +687,7 @@ export class PostgresStore {
       createdAt: r.created_at,
       status: r.status,
       featured: r.featured,
-      moderationStatus: r.moderation_status || 'approved',
+      moderationStatus: r.moderation_status || undefined,
       moderationNotes: r.moderation_notes || undefined
     }));
   }
@@ -587,14 +695,10 @@ export class PostgresStore {
   // --- PROPOSALS ---
   async saveProposals(proposals: Proposal[]): Promise<void> {
     return this.withLock('proposals', async () => {
-      if (!proposals || proposals.length === 0) {
-        await this.pool.query('DELETE FROM proposals');
-        return;
-      }
-      const client = await this.pool.connect();
+      if (!proposals || proposals.length === 0) return;
+      const client = await this.getPool().connect();
       try {
         await client.query('BEGIN');
-        await client.query('DELETE FROM proposals');
         const seen = new Set<string>();
         for (const pr of proposals) {
           if (!pr?.id || seen.has(pr.id)) continue;
@@ -603,11 +707,22 @@ export class PostgresStore {
             `INSERT INTO proposals (
               id, project_id, freelancer_id, freelancer_name, freelancer_avatar, 
               freelancer_title, cover_letter, bid_amount, delivery_days, created_at, status
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            ON CONFLICT (id) DO UPDATE SET
+              project_id = EXCLUDED.project_id,
+              freelancer_id = EXCLUDED.freelancer_id,
+              freelancer_name = EXCLUDED.freelancer_name,
+              freelancer_avatar = EXCLUDED.freelancer_avatar,
+              freelancer_title = EXCLUDED.freelancer_title,
+              cover_letter = EXCLUDED.cover_letter,
+              bid_amount = EXCLUDED.bid_amount,
+              delivery_days = EXCLUDED.delivery_days,
+              created_at = EXCLUDED.created_at,
+              status = EXCLUDED.status`,
             [
               pr.id, pr.projectId, pr.freelancerId, pr.freelancerName, pr.freelancerAvatar || null,
-              pr.freelancerTitle || null, pr.coverLetter || '', pr.bidAmount ?? 0, pr.deliveryDays ?? 3,
-              pr.createdAt || new Date().toISOString(), pr.status || 'pending'
+              pr.freelancerTitle || null, pr.coverLetter || null, pr.bidAmount,
+              pr.deliveryDays, pr.createdAt, pr.status || 'pending'
             ]
           );
         }
@@ -622,7 +737,8 @@ export class PostgresStore {
   }
 
   async listProposals(): Promise<Proposal[]> {
-    const res = await this.pool.query('SELECT * FROM proposals');
+    if (!isPostgresEnabled()) return [];
+    const res = await this.getPool().query('SELECT * FROM proposals');
     return res.rows.map(r => ({
       id: r.id,
       projectId: r.project_id,
@@ -641,14 +757,10 @@ export class PostgresStore {
   // --- WORKSPACES ---
   async saveWorkspaces(workspaces: any[]): Promise<void> {
     return this.withLock('workspaces', async () => {
-      if (!workspaces || workspaces.length === 0) {
-        await this.pool.query('DELETE FROM workspaces');
-        return;
-      }
-      const client = await this.pool.connect();
+      if (!workspaces || workspaces.length === 0) return;
+      const client = await this.getPool().connect();
       try {
         await client.query('BEGIN');
-        await client.query('DELETE FROM workspaces');
         const seen = new Set<string>();
         for (const w of workspaces) {
           if (!w?.workspaceId || seen.has(w.workspaceId)) continue;
@@ -667,7 +779,16 @@ export class PostgresStore {
           await client.query(
             `INSERT INTO workspaces (
               workspace_id, buyer_id, seller_id, order_ids, title, created_at, updated_at, last_activity_at, metadata
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            ON CONFLICT (workspace_id) DO UPDATE SET
+              buyer_id = EXCLUDED.buyer_id,
+              seller_id = EXCLUDED.seller_id,
+              order_ids = EXCLUDED.order_ids,
+              title = EXCLUDED.title,
+              created_at = EXCLUDED.created_at,
+              updated_at = EXCLUDED.updated_at,
+              last_activity_at = EXCLUDED.last_activity_at,
+              metadata = EXCLUDED.metadata`,
             [
               w.workspaceId, w.buyerId, w.sellerId, JSON.stringify(orderIds),
               title, createdAt, updatedAt, w.lastActivityAt || null, JSON.stringify(meta)
@@ -685,7 +806,8 @@ export class PostgresStore {
   }
 
   async listWorkspaces(): Promise<any[]> {
-    const res = await this.pool.query('SELECT * FROM workspaces');
+    if (!isPostgresEnabled()) return [];
+    const res = await this.getPool().query('SELECT * FROM workspaces');
     return res.rows.map(r => {
       const meta = r.metadata || {};
       return {
@@ -709,14 +831,10 @@ export class PostgresStore {
   // --- OFFERS ---
   async saveOffers(offers: WorkstreamOffer[]): Promise<void> {
     return this.withLock('offers', async () => {
-      if (!offers || offers.length === 0) {
-        await this.pool.query('DELETE FROM workstream_offers');
-        return;
-      }
-      const client = await this.pool.connect();
+      if (!offers || offers.length === 0) return;
+      const client = await this.getPool().connect();
       try {
         await client.query('BEGIN');
-        await client.query('DELETE FROM workstream_offers');
         const seen = new Set<string>();
         for (const o of offers) {
           if (!o?.id || seen.has(o.id)) continue;
@@ -725,7 +843,20 @@ export class PostgresStore {
             `INSERT INTO workstream_offers (
               id, order_id, workspace_id, kind, title, amount, delivery_days, status, 
               created_by, created_at, resolved_at, resolved_by, metadata
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            ON CONFLICT (id) DO UPDATE SET
+              order_id = EXCLUDED.order_id,
+              workspace_id = EXCLUDED.workspace_id,
+              kind = EXCLUDED.kind,
+              title = EXCLUDED.title,
+              amount = EXCLUDED.amount,
+              delivery_days = EXCLUDED.delivery_days,
+              status = EXCLUDED.status,
+              created_by = EXCLUDED.created_by,
+              created_at = EXCLUDED.created_at,
+              resolved_at = EXCLUDED.resolved_at,
+              resolved_by = EXCLUDED.resolved_by,
+              metadata = EXCLUDED.metadata`,
             [
               o.id, o.orderId, o.workspaceId || null, o.kind, o.title, o.amount,
               o.deliveryDays ?? null, o.status, o.createdBy, o.createdAt,
@@ -744,7 +875,8 @@ export class PostgresStore {
   }
 
   async listOffers(): Promise<WorkstreamOffer[]> {
-    const res = await this.pool.query('SELECT * FROM workstream_offers');
+    if (!isPostgresEnabled()) return [];
+    const res = await this.getPool().query('SELECT * FROM workstream_offers');
     return res.rows.map(r => ({
       id: r.id,
       orderId: r.order_id,
@@ -765,14 +897,10 @@ export class PostgresStore {
   // --- CUSTOM INVOICES ---
   async saveCustomInvoices(invoices: CustomInvoice[]): Promise<void> {
     return this.withLock('custom_invoices', async () => {
-      if (!invoices || invoices.length === 0) {
-        await this.pool.query('DELETE FROM custom_invoices');
-        return;
-      }
-      const client = await this.pool.connect();
+      if (!invoices || invoices.length === 0) return;
+      const client = await this.getPool().connect();
       try {
         await client.query('BEGIN');
-        await client.query('DELETE FROM custom_invoices');
         const seen = new Set<string>();
         for (const inv of invoices) {
           if (!inv?.id || seen.has(inv.id)) continue;
@@ -811,7 +939,8 @@ export class PostgresStore {
   }
 
   async listCustomInvoices(): Promise<CustomInvoice[]> {
-    const res = await this.pool.query('SELECT * FROM custom_invoices');
+    if (!isPostgresEnabled()) return [];
+    const res = await this.getPool().query('SELECT * FROM custom_invoices');
     return res.rows.map(r => ({
       id: r.id,
       invoiceNumber: r.invoice_number,
@@ -829,14 +958,10 @@ export class PostgresStore {
   // --- DISPUTES ---
   async saveDisputes(disputes: Dispute[]): Promise<void> {
     return this.withLock('disputes', async () => {
-      if (!disputes || disputes.length === 0) {
-        await this.pool.query('DELETE FROM disputes');
-        return;
-      }
-      const client = await this.pool.connect();
+      if (!disputes || disputes.length === 0) return;
+      const client = await this.getPool().connect();
       try {
         await client.query('BEGIN');
-        await client.query('DELETE FROM disputes');
         const seen = new Set<string>();
         for (const d of disputes) {
           if (!d?.id || seen.has(d.id)) continue;
@@ -845,7 +970,20 @@ export class PostgresStore {
             `INSERT INTO disputes (
               id, order_id, buyer_id, seller_id, raised_by, reason, evidence, status, 
               created_at, resolution_notes, resolution_type, notes, assigned_to
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            ON CONFLICT (id) DO UPDATE SET
+              order_id = EXCLUDED.order_id,
+              buyer_id = EXCLUDED.buyer_id,
+              seller_id = EXCLUDED.seller_id,
+              raised_by = EXCLUDED.raised_by,
+              reason = EXCLUDED.reason,
+              evidence = EXCLUDED.evidence,
+              status = EXCLUDED.status,
+              created_at = EXCLUDED.created_at,
+              resolution_notes = EXCLUDED.resolution_notes,
+              resolution_type = EXCLUDED.resolution_type,
+              notes = EXCLUDED.notes,
+              assigned_to = EXCLUDED.assigned_to`,
             [
               d.id, d.orderId, d.buyerId || null, d.sellerId || null, d.raisedBy, d.reason,
               d.evidence || null, d.status, d.createdAt, d.resolutionNotes || null,
@@ -864,7 +1002,8 @@ export class PostgresStore {
   }
 
   async listDisputes(): Promise<Dispute[]> {
-    const res = await this.pool.query('SELECT * FROM disputes');
+    if (!isPostgresEnabled()) return [];
+    const res = await this.getPool().query('SELECT * FROM disputes');
     return res.rows.map(r => ({
       id: r.id,
       orderId: r.order_id,
@@ -885,21 +1024,24 @@ export class PostgresStore {
   // --- REFUNDS ---
   async saveRefunds(refunds: Refund[]): Promise<void> {
     return this.withLock('refunds', async () => {
-      if (!refunds || refunds.length === 0) {
-        await this.pool.query('DELETE FROM refunds');
-        return;
-      }
-      const client = await this.pool.connect();
+      if (!refunds || refunds.length === 0) return;
+      const client = await this.getPool().connect();
       try {
         await client.query('BEGIN');
-        await client.query('DELETE FROM refunds');
         const seen = new Set<string>();
         for (const ref of refunds) {
           if (!ref?.id || seen.has(ref.id)) continue;
           seen.add(ref.id);
           await client.query(
             `INSERT INTO refunds (id, order_id, buyer_id, amount, reason, status, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             ON CONFLICT (id) DO UPDATE SET
+               order_id = EXCLUDED.order_id,
+               buyer_id = EXCLUDED.buyer_id,
+               amount = EXCLUDED.amount,
+               reason = EXCLUDED.reason,
+               status = EXCLUDED.status,
+               created_at = EXCLUDED.created_at`,
             [ref.id, ref.orderId, ref.buyerId, ref.amount, ref.reason || null, ref.status, ref.createdAt]
           );
         }
@@ -914,7 +1056,8 @@ export class PostgresStore {
   }
 
   async listRefunds(): Promise<Refund[]> {
-    const res = await this.pool.query('SELECT * FROM refunds');
+    if (!isPostgresEnabled()) return [];
+    const res = await this.getPool().query('SELECT * FROM refunds');
     return res.rows.map(r => ({
       id: r.id,
       orderId: r.order_id,
@@ -929,21 +1072,24 @@ export class PostgresStore {
   // --- PAYOUTS ---
   async savePayouts(payouts: Payout[]): Promise<void> {
     return this.withLock('payouts', async () => {
-      if (!payouts || payouts.length === 0) {
-        await this.pool.query('DELETE FROM payouts');
-        return;
-      }
-      const client = await this.pool.connect();
+      if (!payouts || payouts.length === 0) return;
+      const client = await this.getPool().connect();
       try {
         await client.query('BEGIN');
-        await client.query('DELETE FROM payouts');
         const seen = new Set<string>();
         for (const p of payouts) {
           if (!p?.id || seen.has(p.id)) continue;
           seen.add(p.id);
           await client.query(
             `INSERT INTO payouts (id, freelancer_id, amount, method, status, created_at, account_details)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             ON CONFLICT (id) DO UPDATE SET
+               freelancer_id = EXCLUDED.freelancer_id,
+               amount = EXCLUDED.amount,
+               method = EXCLUDED.method,
+               status = EXCLUDED.status,
+               created_at = EXCLUDED.created_at,
+               account_details = EXCLUDED.account_details`,
             [p.id, p.freelancerId, p.amount, p.method, p.status, p.createdAt, p.accountDetails || null]
           );
         }
@@ -958,7 +1104,8 @@ export class PostgresStore {
   }
 
   async listPayouts(): Promise<Payout[]> {
-    const res = await this.pool.query('SELECT * FROM payouts');
+    if (!isPostgresEnabled()) return [];
+    const res = await this.getPool().query('SELECT * FROM payouts');
     return res.rows.map(r => ({
       id: r.id,
       freelancerId: r.freelancer_id,
@@ -973,21 +1120,25 @@ export class PostgresStore {
   // --- SUPPORT TICKETS ---
   async saveSupportTickets(tickets: SupportTicket[]): Promise<void> {
     return this.withLock('support_tickets', async () => {
-      if (!tickets || tickets.length === 0) {
-        await this.pool.query('DELETE FROM support_tickets');
-        return;
-      }
-      const client = await this.pool.connect();
+      if (!tickets || tickets.length === 0) return;
+      const client = await this.getPool().connect();
       try {
         await client.query('BEGIN');
-        await client.query('DELETE FROM support_tickets');
         const seen = new Set<string>();
         for (const t of tickets) {
           if (!t?.id || seen.has(t.id)) continue;
           seen.add(t.id);
           await client.query(
             `INSERT INTO support_tickets (id, user_id, user_name, subject, priority, status, created_at, messages)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             ON CONFLICT (id) DO UPDATE SET
+               user_id = EXCLUDED.user_id,
+               user_name = EXCLUDED.user_name,
+               subject = EXCLUDED.subject,
+               priority = EXCLUDED.priority,
+               status = EXCLUDED.status,
+               created_at = EXCLUDED.created_at,
+               messages = EXCLUDED.messages`,
             [t.id, t.userId, t.userName, t.subject, t.priority || 'medium', t.status || 'open', t.createdAt, JSON.stringify(t.messages || [])]
           );
         }
@@ -1002,7 +1153,8 @@ export class PostgresStore {
   }
 
   async listSupportTickets(): Promise<SupportTicket[]> {
-    const res = await this.pool.query('SELECT * FROM support_tickets ORDER BY created_at DESC');
+    if (!isPostgresEnabled()) return [];
+    const res = await this.getPool().query('SELECT * FROM support_tickets ORDER BY created_at DESC');
     return res.rows.map(r => ({
       id: r.id,
       userId: r.user_id,
@@ -1018,21 +1170,24 @@ export class PostgresStore {
   // --- AUDIT LOGS ---
   async saveAuditLogs(logs: AuditLog[]): Promise<void> {
     return this.withLock('audit_logs', async () => {
-      if (!logs || logs.length === 0) {
-        await this.pool.query('DELETE FROM audit_logs');
-        return;
-      }
-      const client = await this.pool.connect();
+      if (!logs || logs.length === 0) return;
+      const client = await this.getPool().connect();
       try {
         await client.query('BEGIN');
-        await client.query('DELETE FROM audit_logs');
         const seen = new Set<string>();
         for (const l of logs) {
           if (!l?.id || seen.has(l.id)) continue;
           seen.add(l.id);
           await client.query(
             `INSERT INTO audit_logs (id, actor, role, action, target, details, timestamp)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             ON CONFLICT (id) DO UPDATE SET
+               actor = EXCLUDED.actor,
+               role = EXCLUDED.role,
+               action = EXCLUDED.action,
+               target = EXCLUDED.target,
+               details = EXCLUDED.details,
+               timestamp = EXCLUDED.timestamp`,
             [l.id, l.actor, l.role, l.action, l.target, l.details || null, l.timestamp]
           );
         }
@@ -1047,7 +1202,8 @@ export class PostgresStore {
   }
 
   async listAuditLogs(): Promise<AuditLog[]> {
-    const res = await this.pool.query('SELECT * FROM audit_logs');
+    if (!isPostgresEnabled()) return [];
+    const res = await this.getPool().query('SELECT * FROM audit_logs');
     return res.rows.map(r => ({
       id: r.id,
       actor: r.actor,
@@ -1062,21 +1218,27 @@ export class PostgresStore {
   // --- USER EMAILS ---
   async saveUserEmails(emails: UserEmail[]): Promise<void> {
     return this.withLock('user_emails', async () => {
-      if (!emails || emails.length === 0) {
-        await this.pool.query('DELETE FROM user_emails');
-        return;
-      }
-      const client = await this.pool.connect();
+      if (!emails || emails.length === 0) return;
+      const client = await this.getPool().connect();
       try {
         await client.query('BEGIN');
-        await client.query('DELETE FROM user_emails');
         const seen = new Set<string>();
         for (const em of emails) {
           if (!em?.id || seen.has(em.id)) continue;
           seen.add(em.id);
           await client.query(
             `INSERT INTO user_emails (id, user_id, user_email, subject, snippet, body, type, sent_at, date, read)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+             ON CONFLICT (id) DO UPDATE SET
+               user_id = EXCLUDED.user_id,
+               user_email = EXCLUDED.user_email,
+               subject = EXCLUDED.subject,
+               snippet = EXCLUDED.snippet,
+               body = EXCLUDED.body,
+               type = EXCLUDED.type,
+               sent_at = EXCLUDED.sent_at,
+               date = EXCLUDED.date,
+               read = EXCLUDED.read`,
             [
               em.id, em.userId, em.userEmail, em.subject, em.snippet || null, em.body,
               (em as any).type || null, (em as any).sentAt || null, em.date || null, !!em.read
@@ -1094,7 +1256,8 @@ export class PostgresStore {
   }
 
   async listUserEmails(): Promise<UserEmail[]> {
-    const res = await this.pool.query('SELECT * FROM user_emails');
+    if (!isPostgresEnabled()) return [];
+    const res = await this.getPool().query('SELECT * FROM user_emails');
     return res.rows.map(r => ({
       id: r.id,
       userId: r.user_id,
@@ -1112,7 +1275,7 @@ export class PostgresStore {
   // --- UPLOADS ---
   async saveUploadRecord(filename: string, record: WorkstreamUploadRecord): Promise<void> {
     return this.withLock('uploads', async () => {
-      await this.pool.query(
+      await this.getPool().query(
         `INSERT INTO uploads (filename, owner_id, original_name, mime, size, created_at, sha256)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
          ON CONFLICT (filename) DO UPDATE SET owner_id = EXCLUDED.owner_id, size = EXCLUDED.size, original_name = EXCLUDED.original_name`,
@@ -1123,12 +1286,13 @@ export class PostgresStore {
 
   async deleteUploadRecord(filename: string): Promise<void> {
     return this.withLock('uploads', async () => {
-      await this.pool.query('DELETE FROM uploads WHERE filename = $1', [filename]);
+      await this.getPool().query('DELETE FROM uploads WHERE filename = $1', [filename]);
     });
   }
 
   async listUploadRecords(): Promise<Record<string, WorkstreamUploadRecord>> {
-    const res = await this.pool.query('SELECT * FROM uploads');
+    if (!isPostgresEnabled()) return {};
+    const res = await this.getPool().query('SELECT * FROM uploads');
     const out: Record<string, WorkstreamUploadRecord> = {};
     for (const r of res.rows) {
       out[r.filename] = {
@@ -1146,7 +1310,7 @@ export class PostgresStore {
   // --- SITE SETTINGS ---
   async saveSiteSettings(settings: any): Promise<void> {
     return this.withLock('site_settings', async () => {
-      await this.pool.query(
+      await this.getPool().query(
         `INSERT INTO site_settings (key, value, updated_at)
          VALUES ('primary', $1, NOW())
          ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
@@ -1156,14 +1320,15 @@ export class PostgresStore {
   }
 
   async loadSiteSettings(): Promise<any | null> {
-    const res = await this.pool.query("SELECT value FROM site_settings WHERE key = 'primary'");
+    if (!isPostgresEnabled()) return null;
+    const res = await this.getPool().query("SELECT value FROM site_settings WHERE key = 'primary'");
     return res.rows.length > 0 ? res.rows[0].value : null;
   }
 
   // --- PAYMENT GATEWAYS ---
   async savePaymentGateways(gateways: any): Promise<void> {
     return this.withLock('payment_gateways', async () => {
-      await this.pool.query(
+      await this.getPool().query(
         `INSERT INTO payment_gateways (key, value, updated_at)
          VALUES ('primary', $1, NOW())
          ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
@@ -1173,14 +1338,15 @@ export class PostgresStore {
   }
 
   async loadPaymentGateways(): Promise<any | null> {
-    const res = await this.pool.query("SELECT value FROM payment_gateways WHERE key = 'primary'");
+    if (!isPostgresEnabled()) return null;
+    const res = await this.getPool().query("SELECT value FROM payment_gateways WHERE key = 'primary'");
     return res.rows.length > 0 ? res.rows[0].value : null;
   }
 
   // --- FINANCIAL LEDGER STATE ---
   async saveLedgerState(state: any): Promise<void> {
     return this.withLock('financial_ledger_state', async () => {
-      await this.pool.query(
+      await this.getPool().query(
         `INSERT INTO financial_ledger_state (key, value, updated_at)
          VALUES ('primary', $1, NOW())
          ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
@@ -1190,7 +1356,8 @@ export class PostgresStore {
   }
 
   async loadLedgerState(): Promise<any | null> {
-    const res = await this.pool.query("SELECT value FROM financial_ledger_state WHERE key = 'primary'");
+    if (!isPostgresEnabled()) return null;
+    const res = await this.getPool().query("SELECT value FROM financial_ledger_state WHERE key = 'primary'");
     return res.rows.length > 0 ? res.rows[0].value : null;
   }
 }

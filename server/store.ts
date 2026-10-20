@@ -912,6 +912,7 @@ export async function hydrateStoreFromPostgres() {
   if (!initialized) {
     console.log('[PostgresStore] Database is empty. Seeding initial dataset...');
     try {
+      postgresStore.isHydrated = true;
       await postgresStore.saveUsers(users);
       await postgresStore.saveGigs(gigs);
       await postgresStore.saveProjects(projects);
@@ -934,6 +935,7 @@ export async function hydrateStoreFromPostgres() {
       await postgresStore.markInitialized();
       console.log('[PostgresStore] Seeding completed successfully.');
     } catch (seedErr) {
+      postgresStore.isHydrated = false;
       console.error('CRITICAL: Failed to seed database:', seedErr);
       process.exit(1);
     }
