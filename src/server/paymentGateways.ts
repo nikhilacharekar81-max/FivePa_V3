@@ -40,9 +40,6 @@ const DEFAULT_STATE: PaymentGatewaysState = {
   sandbox: JSON.parse(JSON.stringify(DEFAULT_ENV_GATEWAYS))
 };
 
-const DATA_DIR = path.join(process.cwd(), 'data');
-const GATEWAYS_FILE = path.join(DATA_DIR, 'payment_gateways.json');
-const KEY_FILE = path.join(DATA_DIR, '.encryption_key');
 const ALGORITHM = 'aes-256-cbc';
 
 function getEncryptionKey(): Buffer {
@@ -118,15 +115,7 @@ export class PaymentGatewayManager {
   }
 
   private loadFromDisk() {
-    try {
-      if (fs.existsSync(GATEWAYS_FILE)) {
-        const raw = fs.readFileSync(GATEWAYS_FILE, 'utf-8');
-        const parsed = JSON.parse(raw);
-        this.loadFromState(parsed);
-      }
-    } catch (err) {
-      console.error('[PaymentGatewayManager] Failed to load payment_gateways:', err);
-    }
+    // Deprecated: Payment gateways are now loaded from PostgreSQL via hydrateStoreFromPostgres()
   }
 
   public getEncryptedState(): PaymentGatewaysState {

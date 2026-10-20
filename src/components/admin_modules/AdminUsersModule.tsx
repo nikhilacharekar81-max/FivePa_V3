@@ -37,7 +37,7 @@ export const AdminUsersModule: React.FC<AdminUsersModuleProps> = ({
   const [deletingUserId, setDeletingUserId] = useState<string | null>(null);
 
   const [editForm, setEditForm] = useState({ 
-    name: '', email: '', role: 'freelancer', title: '', walletBalance: 0, hourlyRate: 50, verified: false, status: 'active' as 'active' | 'suspended' | 'restricted'
+    name: '', email: '', role: 'freelancer', title: '', walletBalance: 0, hourlyRate: 50, verified: false, status: 'active' as 'active' | 'suspended' | 'restricted' | 'deactivated'
   });
 
   const filteredUsers = useMemo(() => {

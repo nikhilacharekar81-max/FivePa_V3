@@ -181,6 +181,7 @@ CREATE TABLE IF NOT EXISTS workspaces (
 
 CREATE TABLE IF NOT EXISTS workstream_offers (
   id VARCHAR(64) PRIMARY KEY,
+  number VARCHAR(32),
   order_id VARCHAR(64) NOT NULL,
   workspace_id VARCHAR(64),
   kind VARCHAR(32) NOT NULL,

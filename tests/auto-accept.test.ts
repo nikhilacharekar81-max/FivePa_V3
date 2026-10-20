@@ -182,7 +182,7 @@ async function run() {
   assert.ok(sysMessage, 'System message must be posted to order workstream');
   assert.ok(sysMessage.text.includes('automatically accepted'), 'System message text must explain review window expiration');
 
-  const auditEntry = auditLogs.find(l => l.target === `Order #${orderId2}` && l.action === 'ORDER_AUTO_ACCEPTED');
+  const auditEntry = auditLogs.find((l: any) => l.target === `Order #${orderId2}` && l.action === 'ORDER_AUTO_ACCEPTED');
   assert.ok(auditEntry, 'Audit log entry must be recorded for auto-acceptance');
   ok('system message and audit log entry recorded properly');
 

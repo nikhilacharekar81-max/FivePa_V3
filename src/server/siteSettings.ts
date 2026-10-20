@@ -223,10 +223,8 @@ export const DEFAULT_SITE_SETTINGS: SiteSettingsState = {
 export class SiteSettingsService {
   private settings: SiteSettingsState;
   private history: SettingsHistoryItem[] = [];
-  private settingsFilePath: string;
 
   constructor() {
-    this.settingsFilePath = path.join(process.cwd(), 'data', 'site_settings.json');
     this.settings = JSON.parse(JSON.stringify(DEFAULT_SITE_SETTINGS));
     this.loadFromDisk();
     this.seedInitialHistory();
@@ -250,16 +248,7 @@ export class SiteSettingsService {
   }
 
   private loadFromDisk() {
-    // Deprecated file-based loader kept as non-blocking fallback
-    try {
-      if (fs.existsSync(this.settingsFilePath)) {
-        const raw = fs.readFileSync(this.settingsFilePath, 'utf-8');
-        const parsed = JSON.parse(raw);
-        this.loadFromState(parsed);
-      }
-    } catch (e) {
-      console.error('[SiteSettingsService] Failed to load site_settings from disk:', e);
-    }
+    // Deprecated: Site settings are now loaded from PostgreSQL via hydrateStoreFromPostgres()
     this.syncFeesToLedger();
   }
 

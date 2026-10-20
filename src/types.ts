@@ -164,7 +164,7 @@ export interface Order {
   requirements?: string;
   deliverables?: string;
   deliverableFiles?: Array<{ id?: string; name: string; url: string; size: string; uploadedAt?: string }>;
-  revisions?: Array<{ id: string; requestedAt: string; reason: string; status: string; version?: number; deliveryVersion?: number }>;
+  revisions?: Array<{ id?: string; requestedAt: string; reason: string; status: string; version?: number; deliveryVersion?: number }>;
   adminNotes?: string;
   isMuted?: boolean;
   escrowProtectionStartDate?: string;
@@ -210,7 +210,7 @@ export interface UserAccount {
   completedJobs: number;
   bio: string;
   skills: string[];
-  status: 'active' | 'suspended' | 'restricted';
+  status: 'active' | 'suspended' | 'restricted' | 'deactivated';
   verified: boolean;
   emailVerified?: boolean;
   mobileVerified?: boolean;
@@ -248,6 +248,8 @@ export interface Dispute {
   status: 'open' | 'under_investigation' | 'resolved_refund' | 'resolved_release' | 'resolved_partial';
   createdAt: string;
   resolutionNotes?: string;
+  resolutionType?: string;
+  notes?: string;
   assignedTo?: string;
 }
 
@@ -375,6 +377,11 @@ export interface Message {
     newDueDate?: string;
     files?: any;
     reviewerRole?: string;
+    disputeId?: string;
+    raisedBy?: string;
+    isCancelledOrder?: boolean;
+    reply?: any;
+    status?: string;
   };
   status?: 'sending' | 'sent' | 'failed';
 }
@@ -385,30 +392,21 @@ export interface UserEmail {
   userEmail: string;
   subject: string;
   body: string;
-  type: 'SUSPEND' | 'RESTRICT' | 'IMPERSONATE' | 'GENERAL';
-  sentAt: string;
+  snippet?: string;
+  date?: string;
+  type: 'SUSPEND' | 'RESTRICT' | 'IMPERSONATE' | 'GENERAL' | string;
+  sentAt?: string;
   read: boolean;
 }
 
-export interface AppNotification {
-  id: string;
-  userId: string;
-  type: 'general' | 'missed_call';
-  title: string;
-  message: string;
-  targetWorkstreamId?: string;
-  senderUsername?: string;
-  projectTitle?: string;
-  read: boolean;
-  createdAt: string;
-}
+
 
 export type WorkstreamOfferKind = 'proposal' | 'invoice' | 'deposit';
 export type WorkstreamOfferStatus = 'pending' | 'accepted' | 'paid' | 'declined' | 'cancelled';
 
 export interface WorkstreamOffer {
   id: string;
-  number?: string;
+  number: string;
   orderId: string;
   workspaceId?: string;
   proposalId?: string;
@@ -451,4 +449,54 @@ export interface CustomInvoice {
   relatedOrderId?: string;
   createdAt?: string;
   paidAt?: string;
+}
+export interface WorkstreamUploadRecord {
+  ownerId: string;
+  originalName?: string;
+  mime?: string;
+  size?: number;
+  createdAt: string;
+  sha256?: string;
+}
+
+export interface AppNotification {
+  id: string;
+  userId: string;
+  type: string;
+  title: string;
+  message: string;
+  targetWorkstreamId?: string;
+  senderUsername?: string;
+  projectTitle?: string;
+  link?: string;
+  read: boolean;
+  createdAt: string;
+  dedupKey?: string;
+}
+
+export type Notification = AppNotification;
+
+export interface SiteFeeSettings {
+  platformName: string;
+  supportEmail: string;
+  currency: string;
+  currencySymbol: string;
+  freelancerCommissionRate: number;
+  buyerProcessingFeeRate: number;
+  smallOrderFee: number;
+  smallOrderFeeThreshold: number;
+  minOrderAmount: number;
+  featuredGigFee: number;
+  urgentProjectFee: number;
+  escrowHoldDays: number;
+  autoCompleteDeliveredDays: number;
+  autoCompleteDeliveredEnabled?: boolean;
+  disputeWindowDays: number;
+  minPayoutThreshold: number;
+  instantPayoutFeeRate: number;
+  freelancerOnboardingMode: 'open' | 'moderated';
+  maintenanceMode: boolean;
+  maintenanceMessage?: string;
+  updatedAt?: string;
+  updatedBy?: string;
 }

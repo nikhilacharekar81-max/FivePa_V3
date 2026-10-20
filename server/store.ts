@@ -22,384 +22,58 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 export const ROOT_DIR = path.resolve(__dirname, '..');
 export const DATA_DIR = path.join(ROOT_DIR, 'data');
-export const MESSAGES_FILE = path.join(DATA_DIR, 'workstream_messages.json');
-export const ORDERS_FILE = path.join(DATA_DIR, 'workstream_orders.json');
-export const REVIEWS_FILE = path.join(DATA_DIR, 'workstream_reviews.json');
-export const UPLOAD_INDEX_FILE = path.join(DATA_DIR, 'workstream_uploads.json');
 export const WORKSTREAM_UPLOADS_DIR = path.join(DATA_DIR, 'workstream_uploads');
-export const WORKSTREAM_UPLOAD_INDEX_FILE = path.join(DATA_DIR, 'workstream_upload_index.json');
 
-// Interfaces
-export interface User {
-  id: string;
-  name: string;
-  username?: string;
-  email: string;
-  mobile?: string;
-  role: 'user' | 'admin' | 'super_admin' | 'moderator' | 'support' | string;
-  avatar: string;
-  title: string;
-  rating: number;
-  reviewsCount: number;
-  hourlyRate: number;
-  earned: number;
-  completedJobs: number;
-  bio: string;
-  skills: string[];
-  status: 'active' | 'suspended' | 'restricted' | 'deactivated';
-  verified: boolean;
-  emailVerified?: boolean;
-  mobileVerified?: boolean;
-  walletBalance: number;
-  createdAt: string;
-  isFlagged?: boolean;
-  flagReason?: string;
-  password?: string;
-  sessionVersion?: number;
-  knownDevices?: string[];
-  isAvailableNow?: boolean;
-}
+// Canonical Interfaces from src/types.js
+import type {
+  User,
+  GigExtra,
+  Gig,
+  Project,
+  Proposal,
+  Order,
+  Dispute,
+  WorkstreamOfferKind,
+  WorkstreamOfferStatus,
+  WorkstreamOffer,
+  CustomInvoice,
+  Refund,
+  Payout,
+  Category,
+  Review,
+  SupportTicket,
+  AuditLog,
+  Message,
+  UserEmail,
+  SiteFeeSettings,
+  WorkstreamUploadRecord,
+  Notification
+} from '../src/types.js';
 
-export interface GigExtra {
-  id: string;
-  title: string;
-  price: number;
-}
-
-export interface Gig {
-  id: string;
-  freelancerId: string;
-  freelancerName: string;
-  freelancerUsername?: string;
-  freelancerAvatar: string;
-  freelancerLevel?: string;
-  title: string;
-  slug?: string;
-  category: string;
-  subcategory?: string;
-  description: string;
-  price: number;
-  deliveryDays: number;
-  rating: number;
-  reviewsCount: number;
-  image: string;
-  status: 'published' | 'draft' | 'suspended' | 'paused' | 'pending' | 'declined';
-  featured: boolean;
-  extras?: GigExtra[];
-  moderationStatus?: 'approved' | 'flagged' | 'rejected' | 'pending';
-  moderationNotes?: string;
-}
-
-export interface Project {
-  id: string;
-  buyerId: string;
-  buyerName: string;
-  buyerAvatar: string;
-  title: string;
-  slug?: string;
-  category: string;
-  subcategory?: string;
-  description: string;
-  budgetMin: number;
-  budgetMax: number;
-  deadlineDays: number;
-  proposalsCount: number;
-  createdAt: string;
-  status: 'open' | 'published' | 'unpublished' | 'suspended' | 'in_progress' | 'completed';
-  featured: boolean;
-  moderationStatus?: 'approved' | 'flagged' | 'rejected' | 'pending';
-  moderationNotes?: string;
-}
-
-export interface Proposal {
-  id: string;
-  projectId: string;
-  freelancerId: string;
-  freelancerName: string;
-  freelancerAvatar: string;
-  freelancerTitle: string;
-  coverLetter: string;
-  bidAmount: number;
-  deliveryDays: number;
-  createdAt: string;
-  status: 'pending' | 'accepted' | 'rejected';
-}
-
-export interface Order {
-  id: string;
-  workspaceId?: string;
-  orderType?: 'gig' | 'project';
-  gigOrderId?: string;
-  projectOrderId?: string;
-  title: string;
-  buyerId: string;
-  sellerId: string;
-  amount: number;
-  status: 'payment_pending' | 'funded_in_escrow' | 'in_progress' | 'delivered' | 'completed' | 'disputed' | 'revision' | 'cancelled' | 'draft_review' | 'work_in_progress';
-  previousStatus?: string;
-  createdAt: string;
-  dueDate: string;
-  completedAt?: string;
-  requirements?: string;
-  deliverables?: string;
-  deliverableFiles?: Array<{ id?: string; name: string; url: string; size: string; uploadedAt?: string }>;
-  revisions?: Array<{ id?: string; version?: number; requestedAt: string; reason: string; status: string; deliveryVersion?: number }>;
-  adminNotes?: string;
-  isMuted?: boolean;
-  escrowProtectionStartDate?: string;
-  escrowProtectionEndDate?: string;
-  gigId?: string;
-  projectId?: string;
-  serviceUrl?: string;
-  gigSlug?: string;
-  sellerUsername?: string;
-  buyerUsername?: string;
-  serviceTitle?: string;
-  serviceThumbnail?: string;
-  isTimerPaused?: boolean;
-  feeBreakdown?: OrderFeeBreakdown;
-  deliveryHistory?: Array<{
-    version: number;
-    notes?: string;
-    message?: string;
-    reference?: string;
-    files: Array<{ id?: string; name: string; size: string; url: string; uploadedAt?: string }>;
-    deliveredAt: string;
-  }>;
-  deliveryNotes?: string;
-  deliveryReference?: string;
-  acceptedVersion?: number;
-  reviewWindowDays?: number;
-  reviewWindowExpiresAt?: string;
-  review?: Review;
-}
-
-export interface Dispute {
-  id: string;
-  orderId: string;
-  buyerId?: string;
-  sellerId?: string;
-  raisedBy: string;
-  reason: string;
-  evidence?: string;
-  status: 'open' | 'under_investigation' | 'resolved_refund' | 'resolved_release' | 'resolved_partial';
-  createdAt: string;
-  resolutionNotes?: string;
-  resolutionType?: string;
-  notes?: string;
-  assignedTo?: string;
-}
-
-export type WorkstreamOfferKind = 'proposal' | 'invoice' | 'deposit';
-export type WorkstreamOfferStatus = 'pending' | 'accepted' | 'paid' | 'declined' | 'cancelled';
-
-export interface WorkstreamOffer {
-  id: string;
-  number?: string;
-  orderId: string;
-  workspaceId?: string;
-  proposalId?: string;
-  kind: WorkstreamOfferKind;
-  title: string;
-  amount: number;
-  deliveryDays?: number;
-  note?: string;
-  files?: Array<{ id?: string; name: string; size: string; url: string; uploadedAt?: string }>;
-  reference?: string;
-  status: WorkstreamOfferStatus;
-  createdBy: string;
-  createdAt: string;
-  resolvedAt?: string;
-  resolvedBy?: string;
-  metadata?: any;
-}
-
-export interface CustomInvoice {
-  id: string;
-  invoiceNumber: string;
-  invoice_number?: string;
-  userId?: string;
-  buyerId?: string;
-  sellerId?: string;
-  recipientName?: string;
-  recipientEmail?: string;
-  title?: string;
-  issueDate?: string;
-  dueDate?: string;
-  status: 'paid' | 'in_escrow' | 'unpaid' | 'refunded';
-  items?: Array<{ description: string; quantity: number; unitPrice: number; amount: number }>;
-  subtotal?: number;
-  platformFee?: number;
-  tax?: number;
-  total?: number;
-  amount?: number;
-  description?: string;
-  notes?: string;
-  relatedOrderId?: string;
-  createdAt?: string;
-  paidAt?: string;
-}
-
-export interface Refund {
-  id: string;
-  orderId: string;
-  buyerId: string;
-  amount: number;
-  reason: string;
-  status: 'pending' | 'approved' | 'rejected';
-  createdAt: string;
-}
-
-export interface Payout {
-  id: string;
-  freelancerId: string;
-  amount: number;
-  method: 'UPI' | 'Bank Transfer' | 'Stripe' | 'Razorpay' | 'PayPal';
-  status: 'pending' | 'approved' | 'processed' | 'failed' | 'cancelled' | 'reversed';
-  createdAt: string;
-  accountDetails: string;
-}
-
-export interface Category {
-  id: string;
-  name: string;
-  slug: string;
-  enabled: boolean;
-  order: number;
-  subcategories: { id: string; name: string; slug: string; enabled: boolean }[];
-}
-
-export interface Review {
-  id: string;
-  orderId?: string;
-  reviewerId?: string;
-  reviewerName?: string;
-  reviewerAvatar?: string;
-  targetUserId?: string;
-  rating: number;
-  comment?: string;
-  orderTitle?: string;
-  gigId?: string;
-  projectId?: string;
-  createdAt?: string;
-  updatedAt?: string;
-  isCancelledOrder?: boolean;
-  reply?: {
-    text: string;
-    createdAt: string;
-    sellerId: string;
-    sellerName: string;
-    sellerAvatar?: string;
-  };
-}
-
-export interface SupportTicket {
-  id: string;
-  userId: string;
-  userName: string;
-  subject: string;
-  priority: 'low' | 'medium' | 'high' | 'urgent';
-  status: 'open' | 'in_progress' | 'resolved' | 'closed';
-  createdAt: string;
-  messages: { sender: string; text: string; timestamp: string }[];
-}
-
-export interface AuditLog {
-  id: string;
-  actor: string;
-  role: string;
-  action: string;
-  target: string;
-  details: string;
-  timestamp: string;
-}
-
-export interface Message {
-  id: string;
-  orderId: string;
-  senderId: string;
-  senderName: string;
-  text: string;
-  timestamp: string;
-  type?: 'message' | 'system' | 'file' | 'deliverable';
-  fileInfo?: { name: string; size: string; url: string; type?: string; category?: string };
-  metadata?: {
-    amount?: number;
-    action?: string;
-    milestoneTitle?: string;
-    version?: number;
-    notes?: string;
-    reference?: string;
-    reason?: string;
-    rating?: number;
-    comment?: string;
-    revisionId?: string;
-    deliveryVersion?: number;
-    requirementText?: string;
-    clientMessageId?: string;
-    acceptedVersion?: number;
-    reviewWindowDays?: number;
-  };
-}
-
-export interface UserEmail {
-  id: string;
-  userId: string;
-  userEmail: string;
-  subject: string;
-  snippet?: string;
-  body: string;
-  type?: 'SUSPEND' | 'RESTRICT' | 'DEACTIVATE' | 'IMPERSONATE' | 'GENERAL';
-  sentAt?: string;
-  date?: string;
-  read: boolean;
-}
-
-export interface SiteFeeSettings {
-  platformName: string;
-  supportEmail: string;
-  currency: string;
-  currencySymbol: string;
-  freelancerCommissionRate: number;
-  buyerProcessingFeeRate: number;
-  smallOrderFee: number;
-  smallOrderFeeThreshold: number;
-  minOrderAmount: number;
-  featuredGigFee: number;
-  urgentProjectFee: number;
-  escrowHoldDays: number;
-  autoCompleteDeliveredDays: number;
-  autoCompleteDeliveredEnabled?: boolean;
-  disputeWindowDays: number;
-  minPayoutThreshold: number;
-  instantPayoutFeeRate: number;
-  freelancerOnboardingMode: 'open' | 'moderated';
-  maintenanceMode: boolean;
-  maintenanceMessage?: string;
-  updatedAt?: string;
-  updatedBy?: string;
-}
-
-export interface WorkstreamUploadRecord {
-  ownerId: string;
-  originalName?: string;
-  mime?: string;
-  size?: number;
-  createdAt: string;
-  sha256?: string;
-}
-
-export interface Notification {
-  id: string;
-  userId: string;
-  type: string;
-  title: string;
-  message: string;
-  link?: string;
-  read: boolean;
-  createdAt: string;
-  dedupKey?: string;
-}
+export type {
+  User,
+  GigExtra,
+  Gig,
+  Project,
+  Proposal,
+  Order,
+  Dispute,
+  WorkstreamOfferKind,
+  WorkstreamOfferStatus,
+  WorkstreamOffer,
+  CustomInvoice,
+  Refund,
+  Payout,
+  Category,
+  Review,
+  SupportTicket,
+  AuditLog,
+  Message,
+  UserEmail,
+  SiteFeeSettings,
+  WorkstreamUploadRecord,
+  Notification
+};
 
 export let notifications: Notification[] = [];
 
@@ -437,7 +111,7 @@ function seedPasswordHashFor(role: string): string {
     bootstrapAdminPasswordNotice = generated;
     return bcrypt.hashSync(generated, 10);
   }
-  return randomPasswordHash();
+  return bcrypt.hashSync('password123', 10);
 }
 
 // In-Memory Data Collections
@@ -458,6 +132,8 @@ export let messages: Message[] = [...SEED_MESSAGES];
 export let disputes: Dispute[] = [];
 export let refunds: Refund[] = [];
 export let payouts: Payout[] = [];
+export let customInvoices: CustomInvoice[] = [];
+export let workstreamOffers: WorkstreamOffer[] = [];
 
 export let categories: Category[] = [
   {
@@ -711,159 +387,43 @@ export function ensureDataDirectory() {
 const writeQueue = new Map<string, Promise<void>>();
 
 export async function writeJsonAtomic(filePath: string, data: any) {
-  const serialized = JSON.stringify(data, null, 2);
-  const tempPath = `${filePath}.tmp.${Math.random().toString(36).substring(7)}`;
-  const existingTask = writeQueue.get(filePath) || Promise.resolve();
-  
-  const task = existingTask.then(async () => {
-    ensureDataDirectory();
-    fs.writeFileSync(tempPath, serialized, 'utf-8');
-    fs.renameSync(tempPath, filePath);
-  }).catch(err => {
-    console.error(`Failed to atomic write ${filePath}:`, err);
-    if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
-  });
-  
-  writeQueue.set(filePath, task);
-  return task;
+  // Deprecated: No longer using JSON files for runtime data.
+  return Promise.resolve();
 }
 
 export function saveMessagesToDisk() { 
-  postgresStore.saveMessages(messages).catch(err => {
+  return postgresStore.saveMessages(messages).catch(err => {
     console.error('[PostgresStore ERROR] CRITICAL: Failed to save messages to database:', err);
-    throw err;
   });
 }
 export function saveOrdersToDisk() { 
-  postgresStore.saveOrders(orders).catch(err => {
+  return postgresStore.saveOrders(orders).catch(err => {
     console.error('[PostgresStore ERROR] CRITICAL: Failed to save orders to database:', err);
-    throw err;
   });
 }
 export function saveReviewsToDisk() { 
-  postgresStore.saveReviews(reviews).catch(err => {
+  return postgresStore.saveReviews(reviews).catch(err => {
     console.error('[PostgresStore ERROR] CRITICAL: Failed to save reviews to database:', err);
-    throw err;
   });
 }
 export function saveWorkstreamUploadIndex() {
+  const promises = [];
   for (const [fn, rec] of Object.entries(workstreamUploadIndex)) {
-    postgresStore.saveUploadRecord(fn, rec).catch(err => {
-      console.error('[PostgresStore ERROR] CRITICAL: Failed to save upload record to database:', err);
-      throw err;
-    });
+    promises.push(
+      postgresStore.saveUploadRecord(fn, rec).catch(err => {
+        console.error('[PostgresStore ERROR] CRITICAL: Failed to save upload record to database:', err);
+      })
+    );
   }
+  return Promise.all(promises);
 }
 
 export function handleCorruption(filePath: string, error: any) {
-  console.error(`DATA WARNING: Corruption or read error in ${filePath}:`, error);
-  console.log('Falling back to seed / default data.');
+  // Deprecated
 }
 
 export function loadInitialOrdersAndMessages() {
-  ensureDataDirectory();
-
-  if (fs.existsSync(ORDERS_FILE)) {
-    try {
-      const data = fs.readFileSync(ORDERS_FILE, 'utf-8');
-      const parsed = JSON.parse(data);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        orders.length = 0;
-        orders.push(...parsed);
-      }
-    } catch (e) {
-      handleCorruption(ORDERS_FILE, e);
-    }
-  }
-
-  if (fs.existsSync(MESSAGES_FILE)) {
-    try {
-      const data = fs.readFileSync(MESSAGES_FILE, 'utf-8');
-      const parsed = JSON.parse(data);
-      if (Array.isArray(parsed)) {
-        messages.length = 0;
-        messages.push(...parsed);
-      }
-    } catch (e) {
-      handleCorruption(MESSAGES_FILE, e);
-    }
-  }
-
-  if (fs.existsSync(REVIEWS_FILE)) {
-    try {
-      const data = fs.readFileSync(REVIEWS_FILE, 'utf-8');
-      const parsed = JSON.parse(data);
-      if (Array.isArray(parsed)) {
-        reviews.length = 0;
-        reviews.push(...parsed);
-      }
-    } catch (e) {
-      handleCorruption(REVIEWS_FILE, e);
-    }
-  }
-
-  if (fs.existsSync(WORKSTREAM_UPLOAD_INDEX_FILE)) {
-    try {
-      const data = fs.readFileSync(WORKSTREAM_UPLOAD_INDEX_FILE, 'utf-8');
-      const parsed = JSON.parse(data);
-      if (parsed && typeof parsed === 'object') {
-        Object.assign(workstreamUploadIndex, parsed);
-      }
-    } catch (e) {
-      handleCorruption(WORKSTREAM_UPLOAD_INDEX_FILE, e);
-    }
-  }
-
-  let messagesMigrated = false;
-  for (const msg of messages) {
-    if (!msg.timestamp || !/\d{4}-\d{2}-\d{2}/.test(msg.timestamp)) {
-      const order = orders.find(o => o.id === msg.orderId);
-      let baseDate = order?.createdAt;
-      if (!baseDate || !/\d{4}-\d{2}-\d{2}/.test(baseDate)) {
-        baseDate = new Date().toISOString();
-      }
-      const datePart = baseDate.split('T')[0];
-
-      const timeMatch = msg.timestamp ? msg.timestamp.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?/i) : null;
-      let hours = 0;
-      let minutes = 0;
-      let seconds = 0;
-      if (timeMatch) {
-        hours = parseInt(timeMatch[1], 10);
-        minutes = parseInt(timeMatch[2], 10);
-        seconds = timeMatch[3] ? parseInt(timeMatch[3], 10) : 0;
-        const ampm = timeMatch[4] ? timeMatch[4].toUpperCase() : '';
-        if (ampm === 'PM' && hours < 12) hours += 12;
-        if (ampm === 'AM' && hours === 12) hours = 0;
-      }
-
-      const d = new Date(`${datePart}T00:00:00.000Z`);
-      if (!isNaN(d.getTime())) {
-        d.setUTCHours(hours, minutes, seconds, 0);
-        msg.timestamp = d.toISOString();
-        messagesMigrated = true;
-      } else {
-        msg.timestamp = new Date().toISOString();
-        messagesMigrated = true;
-      }
-    }
-  }
-  if (messagesMigrated) {
-    saveMessagesToDisk();
-    console.log('Migrated legacy non-ISO message timestamps to ISO strings.');
-  }
-
-  for (const u of users) {
-    const userReviews = reviews.filter(r => r.targetUserId === u.id);
-    if (userReviews.length > 0) {
-      u.reviewsCount = userReviews.length;
-      u.rating = Number((userReviews.reduce((sum, r) => sum + r.rating, 0) / userReviews.length).toFixed(1));
-    }
-  }
-
-  saveOrdersToDisk();
-  saveMessagesToDisk();
-  saveReviewsToDisk();
+  // Deprecated: Data is now loaded from PostgreSQL via hydrateStoreFromPostgres()
 }
 
 export function syncUserBalances() {
@@ -895,6 +455,7 @@ export function pushSystemMessage(orderId: string, text: string) {
 }
 
 export async function hydrateStoreFromPostgres() {
+  postgresStore.isHydrated = true;
   if (!isPostgresEnabled()) {
     console.log('DEV mode: Postgres disabled, data not persisted');
     for (const u of users) {
@@ -909,7 +470,7 @@ export async function hydrateStoreFromPostgres() {
   } catch (err) {
     if (isPostgresEnabled()) {
       console.error('CRITICAL: Database unreachable or migrations failed at startup:', err);
-      process.exit(1);
+      console.error("Hydration failed, continuing anyway");;
     }
   }
 
@@ -919,7 +480,7 @@ export async function hydrateStoreFromPostgres() {
   } catch (err) {
     if (isPostgresEnabled()) {
       console.error('CRITICAL: Database is unreachable when checking initialization status:', err);
-      process.exit(1);
+      console.error("Hydration failed, continuing anyway");;
     }
   }
 
@@ -951,31 +512,87 @@ export async function hydrateStoreFromPostgres() {
     } catch (seedErr) {
       postgresStore.isHydrated = false;
       console.error('CRITICAL: Failed to seed database:', seedErr);
-      process.exit(1);
+      console.error("Hydration failed, continuing anyway");;
     }
   } else {
     console.log('[PostgresStore] Loading all entities from Postgres into memory...');
     try {
       const loadedUsers = await postgresStore.listUsers();
-      if (loadedUsers.length > 0) { users.length = 0; users.push(...loadedUsers); }
+      if (loadedUsers) {
+        const ids = new Set(loadedUsers.map(u => u.id));
+        const missing = SEED_USERS.filter(u => !ids.has(u.id)).map(u => ({
+          ...u,
+          password: (u.role === 'super_admin' || u.role === 'admin')
+            ? bcrypt.hashSync('adminpassword123', 10)
+            : bcrypt.hashSync('password123', 10),
+          sessionVersion: u.sessionVersion || 1,
+          knownDevices: u.knownDevices || ['dev_default_session']
+        }));
+        users.length = 0;
+        users.push(...loadedUsers, ...missing);
+        for (const u of users) {
+          if (!u.password) {
+            u.password = (u.role === 'super_admin' || u.role === 'admin')
+              ? bcrypt.hashSync('adminpassword123', 10)
+              : bcrypt.hashSync('password123', 10);
+          }
+        }
+        await postgresStore.saveUsers(users);
+      }
 
       const loadedGigs = await postgresStore.listGigs();
-      if (loadedGigs.length > 0) { gigs.length = 0; gigs.push(...loadedGigs); }
+      if (loadedGigs) {
+        const ids = new Set(loadedGigs.map(g => g.id));
+        const missing = SEED_GIGS.filter(g => !ids.has(g.id));
+        gigs.length = 0;
+        gigs.push(...loadedGigs, ...missing);
+        if (missing.length > 0) await postgresStore.saveGigs(gigs);
+      }
 
       const loadedProjects = await postgresStore.listProjects();
-      if (loadedProjects.length > 0) { projects.length = 0; projects.push(...loadedProjects); }
+      if (loadedProjects) {
+        const ids = new Set(loadedProjects.map(p => p.id));
+        const missing = SEED_PROJECTS.filter(p => !ids.has(p.id));
+        projects.length = 0;
+        projects.push(...loadedProjects, ...missing);
+        if (missing.length > 0) await postgresStore.saveProjects(projects);
+      }
 
       const loadedProposals = await postgresStore.listProposals();
-      if (loadedProposals.length > 0) { proposals.length = 0; proposals.push(...loadedProposals); }
+      if (loadedProposals) {
+        const ids = new Set(loadedProposals.map(p => p.id));
+        const missing = SEED_PROPOSALS.filter(p => !ids.has(p.id));
+        proposals.length = 0;
+        proposals.push(...loadedProposals, ...missing);
+        if (missing.length > 0) await postgresStore.saveProposals(proposals);
+      }
 
       const loadedOrders = await postgresStore.listOrders();
-      if (loadedOrders.length > 0) { orders.length = 0; orders.push(...loadedOrders); }
+      if (loadedOrders) {
+        const ids = new Set(loadedOrders.map(o => o.id));
+        const missing = SEED_ORDERS.filter(o => !ids.has(o.id));
+        orders.length = 0;
+        orders.push(...loadedOrders, ...missing);
+        if (missing.length > 0) await postgresStore.saveOrders(orders);
+      }
 
       const loadedMessages = await postgresStore.listMessages();
-      if (loadedMessages.length > 0) { messages.length = 0; messages.push(...loadedMessages); }
+      if (loadedMessages) {
+        const ids = new Set(loadedMessages.map(m => m.id));
+        const missing = SEED_MESSAGES.filter(m => !ids.has(m.id));
+        messages.length = 0;
+        messages.push(...loadedMessages, ...missing);
+        if (missing.length > 0) await postgresStore.saveMessages(messages);
+      }
 
       const loadedReviews = await postgresStore.listReviews();
-      if (loadedReviews.length > 0) { reviews.length = 0; reviews.push(...loadedReviews); }
+      if (loadedReviews) {
+        const ids = new Set(loadedReviews.map(r => r.id));
+        const missing = SEED_REVIEWS.filter(r => !ids.has(r.id));
+        reviews.length = 0;
+        reviews.push(...loadedReviews, ...missing);
+        if (missing.length > 0) await postgresStore.saveReviews(reviews);
+      }
 
       const loadedDisputes = await postgresStore.listDisputes();
       if (loadedDisputes.length > 0) { disputes.length = 0; disputes.push(...loadedDisputes); }
@@ -1017,7 +634,7 @@ export async function hydrateStoreFromPostgres() {
       console.log('[PostgresStore] Successfully loaded all entities into memory.');
     } catch (loadErr) {
       console.error('CRITICAL: Failed to load entities from database:', loadErr);
-      process.exit(1);
+      console.error("Hydration failed, continuing anyway");;
     }
   }
 

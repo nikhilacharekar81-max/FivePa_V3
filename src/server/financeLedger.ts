@@ -4,11 +4,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_FEE_CONFIG, calculateOrderFees, percentOfCents, validateFeeConfig, type FeeConfig } from '../shared/fees.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = path.join(__dirname, '../../data');
-const LEDGER_FILE = path.join(DATA_DIR, 'financial_ledger.json');
-
-
 // Authoritative Double-Entry Ledger & Financial Engine for WorkPerHour
 
 export interface ChartOfAccount {
@@ -1332,16 +1327,7 @@ export class FinanceLedgerEngine {
   }
 
   public loadFromDisk() {
-    if (process.env.NODE_ENV === 'test') return;
-    try {
-      if (!fs.existsSync(LEDGER_FILE)) return;
-      const raw = fs.readFileSync(LEDGER_FILE, 'utf-8');
-      const data = JSON.parse(raw);
-      this.loadFromState(data);
-    } catch (err) {
-      this.loadFailed = true;
-      console.error('Failed to load financial ledger from disk:', err);
-    }
+    // Deprecated: Ledger state is now loaded from PostgreSQL via hydrateStoreFromPostgres()
   }
 
   public resetToCleanState() {

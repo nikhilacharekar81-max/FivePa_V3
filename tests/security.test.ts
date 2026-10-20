@@ -79,6 +79,7 @@ async function run() {
 
     // J. Successful login with userId
     let login1 = await api('/api/auth/login', { method: 'POST', body: { userId: 'user_1', password: 'password123', deviceId: 'test-device-1' } });
+    if (login1.status !== 200) console.log('DEBUG login1 response:', login1);
     if (login1.status === 200 && login1.json.requiresVerification) {
         // Need to provide code
         const code = login1.json.mockEmailCode;
@@ -272,12 +273,12 @@ async function run() {
     assert.strictEqual(spoofDep2.status, 403, 'User A supplying User B ID to /api/wallet/deposit must return 403');
     console.log('[PASS] User A cannot credit User B via /api/wallet/deposit (403)');
 
-    // E. User A can deposit into their own account in development mode
     const selfDep = await api('/api/payments/deposit', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${token1}` },
       body: { amount: 100 }
     });
+    if (selfDep.status !== 200) console.log('DEBUG selfDep response:', selfDep);
     assert.strictEqual(selfDep.status, 200, 'User A depositing for self in development succeeds');
     console.log('[PASS] User depositing for self in dev succeeds');
 

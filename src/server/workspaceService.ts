@@ -4,10 +4,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Workspace, Order } from '../types.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = path.join(__dirname, '../../data');
-const WORKSPACES_FILE = path.join(DATA_DIR, 'workspaces.json');
-
 class WorkspaceService {
   private workspaces: Map<string, Workspace> = new Map();
 
@@ -29,15 +25,7 @@ class WorkspaceService {
   }
 
   private loadFromDisk() {
-    try {
-      if (fs.existsSync(WORKSPACES_FILE)) {
-        const raw = fs.readFileSync(WORKSPACES_FILE, 'utf-8');
-        const list = JSON.parse(raw);
-        this.loadFromList(list);
-      }
-    } catch (err) {
-      console.error('Failed to load workspaces from disk:', err);
-    }
+    // Deprecated: Workspaces are now loaded from PostgreSQL via hydrateStoreFromPostgres()
   }
 
   public saveToDisk() {
