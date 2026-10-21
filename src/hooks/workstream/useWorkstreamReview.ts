@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Order, Message, Review } from '../../types';
-import { getAuthToken } from '../../utils/authToken';
+import { fetchWithRetry } from '../../utils/fetchRetry';
 
 export interface UseWorkstreamReviewProps {
   selectedOrder?: Order | null;
@@ -71,17 +71,12 @@ export function useWorkstreamReview({
 
     setIsSubmittingReview(true);
     try {
-      const token = getAuthToken();
       const isEdit = Boolean(review.reviewId);
       const url = isEdit ? `/api/reviews/${review.reviewId}` : '/api/reviews';
       const method = isEdit ? 'PUT' : 'POST';
 
-      const res = await fetch(url, {
+      const res = await fetchWithRetry(url, {
         method,
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
         body: JSON.stringify({
           orderId: selectedOrder.id,
           rating: review.rating,

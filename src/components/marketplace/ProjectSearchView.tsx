@@ -806,6 +806,12 @@ export const ProjectSearchView: React.FC<ProjectSearchViewProps> = ({
                                   <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
                                   <span className="font-bold text-slate-800">{proj.buyerRating.toFixed(1)}</span>
                                   {proj.buyerSpent !== undefined ? <span>• ${proj.buyerSpent.toLocaleString()} spent</span> : null}
+                                  <span className="mx-1">•</span>
+                                  {proj.hireRate !== null && proj.hireRate !== undefined ? (
+                                    <span className="text-emerald-600 font-bold">{Math.round(proj.hireRate * 100)}% Hire Rate</span>
+                                  ) : (
+                                    <span className="text-slate-400">Not enough history</span>
+                                  )}
                                 </span>
                               ) : (
                                 <span className="text-[11px] text-slate-500 font-medium">New buyer</span>
@@ -1066,6 +1072,12 @@ export const ProjectSearchView: React.FC<ProjectSearchViewProps> = ({
                   <span>{previewProject.proposalsCount} proposals</span>
                   <span>•</span>
                   <span>{previewProject.category}</span>
+                  <span>•</span>
+                  {previewProject.hireRate !== null && previewProject.hireRate !== undefined ? (
+                    <span className="text-emerald-600 font-bold">{Math.round(previewProject.hireRate * 100)}% Hire Rate</span>
+                  ) : (
+                    <span>Not enough history</span>
+                  )}
                 </div>
               </div>
             </div>

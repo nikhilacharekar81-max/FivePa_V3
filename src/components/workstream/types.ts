@@ -78,6 +78,7 @@ export interface WorkstreamOffer {
   currencySymbol?: string;
   files?: Array<{ id?: string; name: string; size: string; url: string; uploadedAt?: string }>;
   reference?: string;
+  rejectionReason?: string;
 }
 
 export interface WorkstreamItem extends Order {

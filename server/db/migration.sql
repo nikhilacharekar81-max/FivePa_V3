@@ -28,8 +28,11 @@ CREATE TABLE IF NOT EXISTS users (
   password TEXT,
   session_version INT DEFAULT 1,
   known_devices TEXT[],
-  is_available_now BOOLEAN DEFAULT FALSE
+  is_available_now BOOLEAN DEFAULT FALSE,
+  notification_preferences JSONB
 );
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS notification_preferences JSONB;
 
 CREATE TABLE IF NOT EXISTS gigs (
   id VARCHAR(64) PRIMARY KEY,
@@ -329,4 +332,16 @@ ALTER TABLE orders ADD COLUMN IF NOT EXISTS workspace_id VARCHAR(64);
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS seller_review JSONB;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS previous_status VARCHAR(64);
 ALTER TABLE reviews ADD COLUMN IF NOT EXISTS moderation_status VARCHAR(32);
+
+CREATE TABLE IF NOT EXISTS project_clarifications (
+  id VARCHAR(64) PRIMARY KEY,
+  project_id VARCHAR(64) NOT NULL,
+  user_id VARCHAR(64) NOT NULL,
+  user_name VARCHAR(255) NOT NULL,
+  user_avatar TEXT,
+  text TEXT NOT NULL,
+  timestamp VARCHAR(64) NOT NULL,
+  replies JSONB DEFAULT '[]'::jsonb
+);
+CREATE INDEX IF NOT EXISTS idx_clarifications_project_id ON project_clarifications(project_id);
 

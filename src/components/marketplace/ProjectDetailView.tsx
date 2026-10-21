@@ -24,11 +24,14 @@ import {
   Building,
   Calendar,
   Zap,
-  HelpCircle
+  HelpCircle,
+  TrendingUp,
+  RotateCcw
 } from 'lucide-react';
-import { Project, User as UserType, Proposal, Order } from '../../types';
+import { Project, User as UserType, Proposal, Order, ProjectClarification } from '../../types';
 import { calculateOrderFees } from '../../shared/fees';
 import { getAuthToken } from '../../utils/authToken';
+import { fetchWithRetry } from '../../utils/fetchRetry';
 
 interface ProjectDetailViewProps {
   project: Project;
@@ -89,12 +92,8 @@ export const ProjectDetailView: React.FC<ProjectDetailViewProps> = ({
     setProposalActionSuccess(null);
     try {
       const token = getAuthToken();
-      const res = await fetch(`/api/projects/${project.id}/status`, {
+      const res = await fetchWithRetry(`/api/projects/${project.id}/status`, {
         method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
         body: JSON.stringify({ status: nextStatus })
       });
       const data = await res.json().catch(() => ({}));
@@ -133,12 +132,8 @@ export const ProjectDetailView: React.FC<ProjectDetailViewProps> = ({
     setProposalActionSuccess(null);
     try {
       const token = getAuthToken();
-      const res = await fetch(`/api/proposals/${prop.id}/${action}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        }
+      const res = await fetchWithRetry(`/api/proposals/${prop.id}/${action}`, {
+        method: 'POST'
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -174,36 +169,27 @@ export const ProjectDetailView: React.FC<ProjectDetailViewProps> = ({
   const [contactSent, setContactSent] = useState<boolean>(false);
 
   // Clarification Board state
-  const [clarifications, setClarifications] = useState<Array<{
-    id: string;
-    authorName: string;
-    authorAvatar: string;
-    question: string;
-    createdAt: string;
-    answer?: string;
-    answeredAt?: string;
-  }>>(project.clarificationQuestions || [
-    {
-      id: 'cq_1',
-      authorName: 'David Miller',
-      authorAvatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=150',
-      question: 'Is the draft SLA governed by UK or US jurisdiction? Also, do you require IP assignment clauses included?',
-      createdAt: '1 day ago',
-      answer: 'The SLA is governed by English Law (UK). Yes, standard IP assignment clauses and confidentiality provisions are required.',
-      answeredAt: '18 hours ago'
-    },
-    {
-      id: 'cq_2',
-      authorName: 'Sarah Jenkins, Esq.',
-      authorAvatar: 'https://images.unsplash.com/photo-1580489944761-15a19d654956?auto=format&fit=crop&q=80&w=150',
-      question: 'Will you provide the raw contract docx format for redlining directly in Word track changes?',
-      createdAt: '12 hours ago',
-      answer: 'Yes, we will share the complete Microsoft Word document (.docx) as soon as the proposal is accepted.',
-      answeredAt: '5 hours ago'
-    }
-  ]);
+  const [clarifications, setClarifications] = useState<Array<ProjectClarification>>([]);
   const [newQuestion, setNewQuestion] = useState<string>('');
   const [isSubmittingQuestion, setIsSubmittingQuestion] = useState<boolean>(false);
+  const [isAnsweringId, setIsAnsweringId] = useState<string | null>(null);
+  const [answerText, setAnswerText] = useState<string>('');
+
+  const fetchClarifications = async () => {
+    try {
+      const res = await fetch(`/api/projects/${project.id}/clarifications`);
+      if (res.ok) {
+        const data = await res.json();
+        setClarifications(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch clarifications:', err);
+    }
+  };
+
+  useEffect(() => {
+    fetchClarifications();
+  }, [project.id]);
 
   // Fee preview: same shared math the ledger uses (20% platform commission, freelancer keeps 80%)
   const numericBid = typeof proposalBid === 'number' ? proposalBid : parseFloat(proposalBid) || 0;
@@ -250,23 +236,43 @@ export const ProjectDetailView: React.FC<ProjectDetailViewProps> = ({
   };
 
   // Handle post clarification question
-  const handleAddQuestion = (e: React.FormEvent) => {
+  const handleAddQuestion = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newQuestion.trim()) return;
+    if (!newQuestion.trim() || !currentUser) return;
     setIsSubmittingQuestion(true);
-
-    setTimeout(() => {
-      const newCQ = {
-        id: `cq_${Date.now()}`,
-        authorName: currentUser ? currentUser.name : 'Interested Freelancer',
-        authorAvatar: currentUser ? currentUser.avatar : 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=150',
-        question: newQuestion.trim(),
-        createdAt: 'Just now'
-      };
-      setClarifications(prev => [newCQ, ...prev]);
-      setNewQuestion('');
+    try {
+      const token = getAuthToken();
+      const res = await fetchWithRetry(`/api/projects/${project.id}/clarifications`, {
+        method: 'POST',
+        body: JSON.stringify({ text: newQuestion.trim() })
+      });
+      if (res.ok) {
+        setNewQuestion('');
+        fetchClarifications();
+      }
+    } catch (err) {
+      console.error('Failed to post question:', err);
+    } finally {
       setIsSubmittingQuestion(false);
-    }, 400);
+    }
+  };
+
+  const handleAddAnswer = async (replyToId: string) => {
+    if (!answerText.trim() || !currentUser) return;
+    try {
+      const token = getAuthToken();
+      const res = await fetchWithRetry(`/api/projects/${project.id}/clarifications`, {
+        method: 'POST',
+        body: JSON.stringify({ text: answerText.trim(), replyToId })
+      });
+      if (res.ok) {
+        setAnswerText('');
+        setIsAnsweringId(null);
+        fetchClarifications();
+      }
+    } catch (err) {
+      console.error('Failed to post answer:', err);
+    }
   };
 
   // Bookmark toggle
@@ -381,10 +387,18 @@ export const ProjectDetailView: React.FC<ProjectDetailViewProps> = ({
                   <Briefcase className="w-3.5 h-3.5 text-slate-400" />
                   <span>{project.proposalsCount || 0} Proposals received</span>
                 </span>
-                <span className="hidden sm:inline text-slate-300">•</span>
                 <span className="flex items-center gap-1.5">
                   <Globe className="w-3.5 h-3.5 text-slate-400" />
                   <span>{project.location || 'Remote / Worldwide'}</span>
+                </span>
+                <span className="hidden sm:inline text-slate-300">•</span>
+                <span className="flex items-center gap-1.5">
+                  <TrendingUp className="w-3.5 h-3.5 text-slate-400" />
+                  {project.hireRate !== null && project.hireRate !== undefined ? (
+                    <span className="text-emerald-600 font-bold">{Math.round(project.hireRate * 100)}% Hire Rate</span>
+                  ) : (
+                    <span className="text-slate-500">Not enough history</span>
+                  )}
                 </span>
               </div>
             </div>
@@ -599,46 +613,96 @@ export const ProjectDetailView: React.FC<ProjectDetailViewProps> = ({
 
               {/* List of Questions & Answers */}
               <div className="space-y-4 pt-2">
-                {clarifications.map((item) => (
-                  <div key={item.id} className="p-4 rounded-xl border border-slate-100 bg-white space-y-3">
-                    {/* Question */}
-                    <div className="flex items-start gap-3">
-                      <img 
-                        src={item.authorAvatar} 
-                        alt={item.authorName} 
-                        className="w-8 h-8 rounded-full object-cover shrink-0 mt-0.5 border border-slate-200"
-                      />
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between mb-1">
-                          <span className="text-xs font-bold text-slate-900">{item.authorName}</span>
-                          <span className="text-2xs text-slate-400">{item.createdAt}</span>
+                {clarifications.length === 0 ? (
+                  <div className="p-8 text-center bg-slate-50 rounded-2xl border border-slate-100 text-xs text-slate-400 italic">
+                    No clarification questions yet. Freelancers can ask questions to clear doubts before bidding.
+                  </div>
+                ) : (
+                  clarifications.map((item) => (
+                    <div key={item.id} className="p-4 rounded-xl border border-slate-100 bg-white space-y-3 shadow-2xs">
+                      {/* Question */}
+                      <div className="flex items-start gap-3">
+                        <img 
+                          src={item.userAvatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=150'} 
+                          alt={item.userName} 
+                          className="w-8 h-8 rounded-full object-cover shrink-0 mt-0.5 border border-slate-200"
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-xs font-bold text-slate-900">{item.userName}</span>
+                            <span className="text-2xs text-slate-400">{new Date(item.timestamp).toLocaleString()}</span>
+                          </div>
+                          <p className="text-xs text-slate-700 leading-relaxed font-medium">
+                            "{item.text}"
+                          </p>
                         </div>
-                        <p className="text-xs text-slate-700 leading-relaxed font-medium">
-                          "{item.question}"
-                        </p>
+                      </div>
+
+                      {/* Replies */}
+                      <div className="ml-11 space-y-3">
+                        {item.replies?.map((rep) => (
+                          <div key={rep.id} className="p-3 bg-emerald-50/60 rounded-xl border border-emerald-100/80 space-y-1">
+                            <div className="flex items-center justify-between">
+                              <span className="text-2xs font-extrabold text-emerald-800 uppercase tracking-wider flex items-center gap-1">
+                                <CheckCircle2 className="w-3 h-3 text-emerald-600" /> Response ({rep.userName})
+                              </span>
+                              <span className="text-2xs text-slate-400">{new Date(rep.timestamp).toLocaleString()}</span>
+                            </div>
+                            <p className="text-xs text-emerald-950 leading-relaxed">
+                              {rep.text}
+                            </p>
+                          </div>
+                        ))}
+
+                        {/* project owner can reply if they haven't or even if they have */}
+                        {isProjectOwner && (
+                          <div>
+                            {isAnsweringId === item.id ? (
+                              <div className="space-y-2 animate-in fade-in slide-in-from-left-1">
+                                <textarea
+                                  value={answerText}
+                                  onChange={(e) => setAnswerText(e.target.value)}
+                                  placeholder="Type your response to this clarification..."
+                                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:ring-1 focus:ring-emerald-500 focus:outline-none"
+                                  rows={2}
+                                />
+                                <div className="flex gap-2">
+                                  <button
+                                    onClick={() => handleAddAnswer(item.id)}
+                                    disabled={!answerText.trim()}
+                                    className="px-3 py-1.5 bg-emerald-600 text-white font-bold rounded-lg text-[10px] cursor-pointer"
+                                  >
+                                    Post Answer
+                                  </button>
+                                  <button
+                                    onClick={() => { setIsAnsweringId(null); setAnswerText(''); }}
+                                    className="px-3 py-1.5 bg-white border border-slate-200 text-slate-600 font-bold rounded-lg text-[10px] cursor-pointer"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <button
+                                onClick={() => setIsAnsweringId(item.id)}
+                                className="text-[10px] font-bold text-emerald-600 hover:underline flex items-center gap-1 transition cursor-pointer"
+                              >
+                                <MessageSquare className="w-3 h-3" />
+                                <span>{item.replies?.length ? 'Add another response' : 'Respond to this question'}</span>
+                              </button>
+                            )}
+                          </div>
+                        )}
+
+                        {!isProjectOwner && (!item.replies || item.replies.length === 0) && (
+                          <div className="text-2xs text-slate-400 italic">
+                            Pending answer from buyer...
+                          </div>
+                        )}
                       </div>
                     </div>
-
-                    {/* Buyer Answer if present */}
-                    {item.answer ? (
-                      <div className="ml-11 p-3 bg-emerald-50/60 rounded-xl border border-emerald-100/80 space-y-1">
-                        <div className="flex items-center justify-between">
-                          <span className="text-2xs font-extrabold text-emerald-800 uppercase tracking-wider flex items-center gap-1">
-                            <CheckCircle2 className="w-3 h-3 text-emerald-600" /> Buyer Response ({project.buyerName})
-                          </span>
-                          {item.answeredAt && <span className="text-2xs text-slate-400">{item.answeredAt}</span>}
-                        </div>
-                        <p className="text-xs text-emerald-950 leading-relaxed">
-                          {item.answer}
-                        </p>
-                      </div>
-                    ) : (
-                      <div className="ml-11 text-2xs text-slate-400 italic">
-                        Pending answer from buyer...
-                      </div>
-                    )}
-                  </div>
-                ))}
+                  ))
+                )}
               </div>
             </div>
 
@@ -1153,7 +1217,7 @@ export const ProjectDetailView: React.FC<ProjectDetailViewProps> = ({
                     <RotateCcw className="w-3.5 h-3.5 text-slate-400" /> Hire Rate
                   </span>
                   <span className="font-semibold text-slate-900">
-                    {project.hireRate !== null ? `${Math.round(project.hireRate * 100)}%` : 'Not enough history'}
+                    {project.hireRate !== null && project.hireRate !== undefined ? `${Math.round(project.hireRate * 100)}%` : 'Not enough history'}
                   </span>
                 </div>
 

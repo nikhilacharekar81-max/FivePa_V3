@@ -8,7 +8,8 @@ interface SupportModalProps {
   setSupportSubject: (subject: string) => void;
   supportMessage: string;
   setSupportMessage: (message: string) => void;
-  onSubmitTicket: (e: React.FormEvent) => void;
+  onSubmitTicket: (e: React.FormEvent, isAppeal?: boolean) => void;
+  isAppeal?: boolean;
 }
 
 export const SupportModal: React.FC<SupportModalProps> = ({
@@ -18,9 +19,12 @@ export const SupportModal: React.FC<SupportModalProps> = ({
   setSupportSubject,
   supportMessage,
   setSupportMessage,
-  onSubmitTicket
+  onSubmitTicket,
+  isAppeal
 }) => {
   if (!isOpen) return null;
+
+  const isAppealContext = Boolean(isAppeal || supportSubject.toLowerCase().includes('appeal'));
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
@@ -41,7 +45,7 @@ export const SupportModal: React.FC<SupportModalProps> = ({
           </button>
         </div>
 
-        <form onSubmit={onSubmitTicket} className="space-y-4">
+        <form onSubmit={(e) => onSubmitTicket(e, isAppealContext)} className="space-y-4">
           <div>
             <label className="block text-xs font-bold text-fiverr-dark uppercase tracking-wider mb-2">Inquiry Subject / Topic</label>
             <input 
@@ -78,7 +82,7 @@ export const SupportModal: React.FC<SupportModalProps> = ({
               type="submit" 
               className="px-5 py-2.5 text-xs font-bold text-slate-950 bg-emerald-400 hover:bg-emerald-300 rounded-xl shadow-xs transition-colors cursor-pointer"
             >
-              Submit Support Ticket
+              {isAppealContext ? 'Submit Account Appeal' : 'Submit Support Ticket'}
             </button>
           </div>
         </form>

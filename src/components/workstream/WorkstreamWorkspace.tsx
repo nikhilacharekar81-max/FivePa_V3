@@ -16,6 +16,7 @@ import { WorkstreamRevisionModal } from './WorkstreamRevisionModal';
 import { WorkstreamReviewModal } from './WorkstreamReviewModal';
 import { WorkstreamVideoCallModal } from './WorkstreamVideoCallModal';
 import { getAuthToken } from '../../utils/authToken';
+import { fetchWithRetry } from '../../utils/fetchRetry';
 import { classifyFileUrl, openWebLink } from '../../utils/safeFileLink';
 import { useWorkstreamOffers } from '../../hooks/workstream/useWorkstreamOffers';
 
@@ -107,41 +108,28 @@ export const WorkstreamWorkspace: React.FC<WorkstreamWorkspaceProps> = ({
     if (!requestReason.trim() || !requestDays) return;
     setIsSubmittingCancel(true);
     setCancelModalError(null);
-    let retries = 3;
-    while (retries > 0) {
-      try {
-        const res = await fetch(`/api/orders/${order.id}/extension-request`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${getAuthToken()}`
-          },
-          body: JSON.stringify({ days: Number(requestDays), reason: requestReason.trim() })
-        });
-        if (res.status === 409 && retries > 1) {
-            await new Promise(r => setTimeout(r, 1000));
-            retries--;
-            continue;
-        }
-        if (res.status === 429) {
-          setCancelModalError('You are sending requests too quickly. Please wait a moment.');
-          setIsSubmittingCancel(false);
-          return;
-        }
-        if (res.status === 409) {
-          setCancelModalError('This action is currently being processed. Please try again in a moment.');
-          setIsSubmittingCancel(false);
-          return;
-        }
-        if (!res.ok) throw new Error('Failed to request extension');
-        setIsExtensionModalOpen(false);
-        break;
-      } catch (err: any) {
-        setCancelModalError(err.message);
-        break;
-      } finally {
-        setIsSubmittingCancel(false);
+    try {
+      const res = await fetchWithRetry(`/api/orders/${order.id}/extension-request`, {
+        method: 'POST',
+        body: JSON.stringify({ days: Number(requestDays), reason: requestReason.trim() })
+      });
+      if (res.status === 429) {
+        setCancelModalError('You are sending requests too quickly. Please wait a moment.');
+        return;
       }
+      if (res.status === 409) {
+        setCancelModalError('This action is currently being processed. Please try again in a moment.');
+        return;
+      }
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Failed to request extension');
+      }
+      setIsExtensionModalOpen(false);
+    } catch (err: any) {
+      setCancelModalError(err.message);
+    } finally {
+      setIsSubmittingCancel(false);
     }
   };
   const [veryLateReason, setVeryLateReason] = useState('');
@@ -154,13 +142,8 @@ export const WorkstreamWorkspace: React.FC<WorkstreamWorkspaceProps> = ({
     setIsSubmittingCancel(true);
     setCancelModalError(null);
     try {
-      const token = getAuthToken();
-      const res = await fetch(`/api/orders/${order.id}/cancel-request`, {
+      const res = await fetchWithRetry(`/api/orders/${order.id}/cancel-request`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
         body: JSON.stringify({ reason: cancelModalReason.trim(), details: cancelModalDetails.trim() || undefined })
       });
       const data = await res.json().catch(() => ({}));
@@ -179,13 +162,8 @@ export const WorkstreamWorkspace: React.FC<WorkstreamWorkspaceProps> = ({
     setIsSubmittingCancel(true);
     setCancelModalError(null);
     try {
-      const token = getAuthToken();
-      const res = await fetch(`/api/orders/${order.id}/cancel-request/respond`, {
+      const res = await fetchWithRetry(`/api/orders/${order.id}/cancel-request/respond`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
         body: JSON.stringify({ action, reason })
       });
       const data = await res.json().catch(() => ({}));
@@ -208,13 +186,8 @@ export const WorkstreamWorkspace: React.FC<WorkstreamWorkspaceProps> = ({
     setIsSubmittingCancel(true);
     setCancelModalError(null);
     try {
-      const token = getAuthToken();
-      const res = await fetch('/api/payments/escrow/refund', {
+      const res = await fetchWithRetry('/api/payments/escrow/refund', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
         body: JSON.stringify({ orderId: order.id, reason: veryLateReason.trim() })
       });
       const data = await res.json().catch(() => ({}));
@@ -311,13 +284,8 @@ export const WorkstreamWorkspace: React.FC<WorkstreamWorkspaceProps> = ({
 
   const handleReplyReview = async (reviewId: string, replyText: string): Promise<{ ok: boolean; error?: string }> => {
     try {
-      const token = getAuthToken();
-      const res = await fetch(`/api/reviews/${reviewId}/reply`, {
+      const res = await fetchWithRetry(`/api/reviews/${reviewId}/reply`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
         body: JSON.stringify({ text: replyText })
       });
       const data = await res.json().catch(() => ({}));
@@ -335,15 +303,9 @@ export const WorkstreamWorkspace: React.FC<WorkstreamWorkspaceProps> = ({
     setIsSubmittingDispute(true);
     setDisputeModalError(null);
     try {
-      const token = getAuthToken();
-      const headers = {
-        'Content-Type': 'application/json',
-        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-      };
       if (escrowFunded || activeEscrow > 0) {
-        const res = await fetch('/api/disputes/open', {
+        const res = await fetchWithRetry('/api/disputes/open', {
           method: 'POST',
-          headers,
           body: JSON.stringify({ orderId: order.id, reason: disputeReasonInput.trim() })
         });
         const data = await res.json().catch(() => ({}));
@@ -355,9 +317,8 @@ export const WorkstreamWorkspace: React.FC<WorkstreamWorkspaceProps> = ({
         if (data.order) onOrderChanged?.(data.order);
         else onOrderChanged?.(null);
       } else {
-        await fetch('/api/support-tickets', {
+        await fetchWithRetry('/api/support-tickets', {
           method: 'POST',
-          headers,
           body: JSON.stringify({
             subject: `Workstream Support: ${order.title} (#${order.id})`,
             text: disputeReasonInput.trim(),
@@ -468,6 +429,21 @@ export const WorkstreamWorkspace: React.FC<WorkstreamWorkspaceProps> = ({
   };
 
   const sellerReview = (order as any).sellerReview;
+
+  const handleRespondExtension = async (action: 'approve' | 'reject', reason?: string) => {
+    try {
+      const res = await fetchWithRetry(`/api/orders/${order.id}/extension-request/respond`, {
+        method: 'POST',
+        body: JSON.stringify({ action, reason })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Failed to respond to extension request');
+      onOrderChanged?.(data.order || null);
+      return { ok: true };
+    } catch (err: any) {
+      return { ok: false, error: err.message || 'Failed to respond' };
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -634,6 +610,7 @@ export const WorkstreamWorkspace: React.FC<WorkstreamWorkspaceProps> = ({
                     onOpenReviewModal={() => setIsReviewModalOpen(true)}
                     onOpenDisputeModal={() => setIsDisputeModalOpen(true)}
                     onStartVideoCall={() => setIsVideoCallModalOpen(true)}
+                    onRespondToExtension={handleRespondExtension}
                   />
                   <WorkstreamMessageInput
                     key={order.id}

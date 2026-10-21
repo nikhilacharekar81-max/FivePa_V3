@@ -45,6 +45,7 @@ interface WorkstreamActivityStreamProps {
   onOpenReviewModal?: () => void;
   onOpenDisputeModal?: () => void;
   onStartVideoCall?: () => void;
+  onRespondToExtension?: (action: 'approve' | 'reject', reason?: string) => Promise<{ ok: boolean; error?: string }>;
 }
 
 export const WorkstreamActivityStream: React.FC<WorkstreamActivityStreamProps> = ({
@@ -70,7 +71,8 @@ export const WorkstreamActivityStream: React.FC<WorkstreamActivityStreamProps> =
   onOpenRevisionModal,
   onOpenReviewModal,
   onOpenDisputeModal,
-  onStartVideoCall
+  onStartVideoCall,
+  onRespondToExtension
 }) => {
   const scrollEndRef = useRef<HTMLDivElement>(null);
   const [activeFilter, setActiveFilter] = useState<ActivityFilter>('all');
@@ -83,6 +85,9 @@ export const WorkstreamActivityStream: React.FC<WorkstreamActivityStreamProps> =
   const [isSubmittingReply, setIsSubmittingReply] = useState(false);
   const [replyError, setReplyError] = useState<string | null>(null);
   const [expandedOfferIds, setExpandedOfferIds] = useState<Record<string, boolean>>({});
+  const [isRejectingExtension, setIsRejectingExtension] = useState<string | null>(null);
+  const [extensionRejectionReason, setExtensionRejectionReason] = useState('');
+  const [extensionError, setExtensionError] = useState<string | null>(null);
 
   const KIND_CFG = {
     proposal: { label: 'Proposal', icon: <FileSignature className="w-4 h-4" />, accept: 'Accept & Fund Escrow' },
@@ -853,11 +858,84 @@ export const WorkstreamActivityStream: React.FC<WorkstreamActivityStreamProps> =
             )}
 
             {/* 9. DEADLINE SPECIFICS */}
-            {info.category === 'deadline' && (meta.oldDate || meta.newDueDate) && (
-              <div className="p-3 bg-amber-50/60 rounded-xl border border-amber-100 flex items-center justify-between text-xs text-amber-950 font-medium">
-                <span>Previous Due: <strong className="font-mono tabular-nums">{meta.oldDate || '-'}</strong></span>
-                <span className="text-amber-500">➔</span>
-                <span>New Due Date: <strong className="font-mono tabular-nums text-emerald-700">{meta.newDueDate || '-'}</strong></span>
+            {info.category === 'deadline' && (
+              <div className="space-y-3 pt-1">
+                {(meta.oldDate || meta.newDueDate) && (
+                  <div className="p-3 bg-amber-50/60 rounded-xl border border-amber-100 flex items-center justify-between text-xs text-amber-950 font-medium">
+                    <span>Previous Due: <strong className="font-mono tabular-nums">{meta.oldDate || '-'}</strong></span>
+                    <span className="text-amber-500">➔</span>
+                    <span>New Due Date: <strong className="font-mono tabular-nums text-emerald-700">{meta.newDueDate || '-'}</strong></span>
+                  </div>
+                )}
+
+                {meta.action === 'time_extension_requested' && (
+                  <div className="p-3.5 bg-amber-50 rounded-xl border border-amber-200 text-xs text-amber-950 leading-relaxed shadow-sm">
+                    <div className="flex items-center gap-2 mb-2 font-bold text-amber-900">
+                      <Clock className="w-4 h-4" />
+                      <span>Delivery Extension Requested</span>
+                    </div>
+                    <div className="space-y-2 text-amber-800">
+                      <p>Seller requested <strong>{meta.days || 'additional'} days</strong>.</p>
+                      {meta.reason && <p className="italic bg-white/60 p-2.5 rounded-lg border border-amber-100">&ldquo;{meta.reason}&rdquo;</p>}
+                    </div>
+
+                    {iAmBuyer && !orderIsCompleted && (
+                      <div className="pt-3.5 mt-3 border-t border-amber-200/50 space-y-3">
+                        {isRejectingExtension === msg.id ? (
+                          <div className="space-y-2 animate-in fade-in slide-in-from-top-1">
+                            <label className="block text-[10px] font-bold uppercase text-rose-800">Rejection Reason (Required)</label>
+                            <textarea
+                              value={extensionRejectionReason}
+                              onChange={(e) => setExtensionRejectionReason(e.target.value)}
+                              placeholder="Explain why you are rejecting the extension..."
+                              className="w-full p-2 bg-white border border-rose-300 rounded-lg text-xs"
+                              rows={2}
+                            />
+                            <div className="flex gap-2">
+                              <button
+                                onClick={async () => {
+                                  if (!extensionRejectionReason.trim()) return;
+                                  const res = await onRespondToExtension?.('reject', extensionRejectionReason.trim());
+                                  if (res?.ok) {
+                                    setIsRejectingExtension(null);
+                                    setExtensionRejectionReason('');
+                                  } else {
+                                    setExtensionError(res?.error || 'Failed to reject');
+                                  }
+                                }}
+                                className="flex-1 py-1.5 bg-rose-600 text-white font-bold rounded-lg text-[10px]"
+                              >
+                                Confirm Reject
+                              </button>
+                              <button
+                                onClick={() => setIsRejectingExtension(null)}
+                                className="px-3 py-1.5 bg-white border border-slate-200 text-slate-600 font-bold rounded-lg text-[10px]"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => onRespondToExtension?.('approve')}
+                              className="flex-1 py-2 px-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl text-xs transition cursor-pointer shadow-2xs"
+                            >
+                              Approve Extension
+                            </button>
+                            <button
+                              onClick={() => setIsRejectingExtension(msg.id)}
+                              className="flex-1 py-2 px-3 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 font-bold rounded-xl text-xs transition cursor-pointer"
+                            >
+                              Reject Extension
+                            </button>
+                          </div>
+                        )}
+                        {extensionError && <p className="text-[10px] text-rose-600 font-bold">{extensionError}</p>}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
@@ -1103,7 +1181,15 @@ export const WorkstreamActivityStream: React.FC<WorkstreamActivityStreamProps> =
                           )}
                         </div>
                       ) : (
-                        <p className="leading-relaxed whitespace-pre-wrap">{msg.text}</p>
+                        <div className="space-y-2">
+                          {msg.metadata?.offPlatformWarning && (
+                            <div className="p-2 bg-amber-50 border border-amber-200 rounded-lg text-amber-800 font-semibold flex items-center gap-2 animate-in slide-in-from-top-1">
+                              <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
+                              <span className="text-[10px] leading-tight">Safety Warning: Keep payments & contact on WorkPerHour to stay protected.</span>
+                            </div>
+                          )}
+                          <p className="leading-relaxed whitespace-pre-wrap">{msg.text}</p>
+                        </div>
                       )}
                     </div>
 

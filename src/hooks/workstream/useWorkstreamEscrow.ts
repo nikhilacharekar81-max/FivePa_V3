@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Order, Message } from '../../types';
-import { getAuthToken } from '../../utils/authToken';
+import { fetchWithRetry } from '../../utils/fetchRetry';
 
 export interface UseWorkstreamEscrowProps {
   selectedOrder?: Order | null;
@@ -28,16 +28,9 @@ export function useWorkstreamEscrow({
     setEscrowError(null);
     setIsReleasingEscrow(true);
 
-    const token = getAuthToken();
-    const authHeaders = {
-      'Content-Type': 'application/json',
-      ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-    };
-
     try {
-      const releaseRes = await fetch('/api/payments/escrow/release', {
+      const releaseRes = await fetchWithRetry('/api/payments/escrow/release', {
         method: 'POST',
-        headers: authHeaders,
         body: JSON.stringify({ orderId: selectedOrder.id })
       });
 
@@ -62,9 +55,7 @@ export function useWorkstreamEscrow({
       // Sync authoritative thread messages (deliverable_approved, escrow_released, order_completed)
       if (setMessages) {
         try {
-          const msgRes = await fetch(`/api/messages/${selectedOrder.id}`, {
-            headers: { ...(token ? { 'Authorization': `Bearer ${token}` } : {}) }
-          });
+          const msgRes = await fetchWithRetry(`/api/messages/${selectedOrder.id}`);
           if (msgRes.ok) {
             const freshMessages = await msgRes.json();
             if (Array.isArray(freshMessages)) {

@@ -20,7 +20,8 @@ import type {
   UserEmail,
   WorkstreamOffer,
   CustomInvoice,
-  Notification
+  Notification,
+  ProjectClarification
 } from '../../src/types.js';
 
 const { Pool } = pkg;
@@ -464,8 +465,8 @@ export class PostgresStore {
               id, name, username, email, mobile, role, avatar, title, rating, reviews_count, 
               hourly_rate, earned, completed_jobs, bio, skills, status, verified, email_verified, 
               mobile_verified, wallet_balance, created_at, is_flagged, flag_reason, password, 
-              session_version, known_devices, is_available_now
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
+              session_version, known_devices, is_available_now, notification_preferences
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
             ON CONFLICT (id) DO UPDATE SET
               name = EXCLUDED.name,
               username = EXCLUDED.username,
@@ -492,7 +493,8 @@ export class PostgresStore {
               password = EXCLUDED.password,
               session_version = EXCLUDED.session_version,
               known_devices = EXCLUDED.known_devices,
-              is_available_now = EXCLUDED.is_available_now`,
+              is_available_now = EXCLUDED.is_available_now,
+              notification_preferences = EXCLUDED.notification_preferences`,
             [
               u.id, u.name, u.username || null, u.email, u.mobile || null, u.role, u.avatar || null,
               u.title || null, u.rating ?? 5.0, u.reviewsCount ?? 0, u.hourlyRate ?? 0, u.earned ?? 0,
@@ -500,7 +502,7 @@ export class PostgresStore {
               !!u.verified, !!u.emailVerified, !!u.mobileVerified, u.walletBalance ?? 0,
               u.createdAt || new Date().toISOString(), !!u.isFlagged, u.flagReason || null,
               u.password || null, u.sessionVersion ?? 1, u.knownDevices || ['dev_default_session'],
-              !!u.isAvailableNow
+              !!u.isAvailableNow, u.notificationPreferences ? JSON.stringify(u.notificationPreferences) : null
             ]
           );
         }
@@ -550,7 +552,8 @@ export class PostgresStore {
       password: r.password || undefined,
       sessionVersion: Number(r.session_version || 1),
       knownDevices: r.known_devices || [],
-      isAvailableNow: r.is_available_now
+      isAvailableNow: r.is_available_now,
+      notificationPreferences: r.notification_preferences || undefined
     }));
   }
 
@@ -1462,15 +1465,34 @@ export class PostgresStore {
   }
 
   // --- NOTIFICATIONS ---
-  async saveNotification(n: Notification): Promise<void> {
-    return this.withLock(`notif_${n.id}`, async () => {
-      await this.getPool().query(
-        `INSERT INTO notifications (id, user_id, type, title, message, link, read, created_at, dedup_key)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-         ON CONFLICT (id) DO UPDATE SET
-           read = EXCLUDED.read`,
-        [n.id, n.userId, n.type, n.title, n.message, n.link || null, !!n.read, n.createdAt, n.dedupKey || null]
-      );
+  async saveNotification(n: Notification): Promise<{ inserted: boolean; duplicate?: boolean }> {
+    if (!isPostgresEnabled()) {
+      return { inserted: true };
+    }
+    const lockKey = n.dedupKey ? `notif_dedup_${n.dedupKey}` : `notif_${n.id}`;
+    return this.withLock(lockKey, async () => {
+      try {
+        await this.getPool().query(
+          `INSERT INTO notifications (id, user_id, type, title, message, link, read, created_at, dedup_key)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+           ON CONFLICT (id) DO UPDATE SET
+             read = EXCLUDED.read`,
+          [n.id, n.userId, n.type, n.title, n.message, n.link || null, !!n.read, n.createdAt, n.dedupKey || null]
+        );
+        return { inserted: true };
+      } catch (err: any) {
+        const isDedupConflict =
+          err?.code === '23505' &&
+          (err?.constraint?.includes('dedup') ||
+           err?.detail?.includes('dedup_key') ||
+           err?.message?.includes('dedup_key') ||
+           Boolean(n.dedupKey));
+
+        if (isDedupConflict) {
+          return { inserted: false, duplicate: true };
+        }
+        throw err;
+      }
     });
   }
 
@@ -1500,10 +1522,67 @@ export class PostgresStore {
     await this.getPool().query('UPDATE notifications SET read = TRUE WHERE user_id = $1', [userId]);
   }
 
+  // --- PROJECT CLARIFICATIONS ---
+  async saveProjectClarifications(clarifications: ProjectClarification[]): Promise<void> {
+    return this.withLock('project_clarifications', async () => {
+      if (!clarifications) return;
+      const client = await this.getPool().connect();
+      try {
+        await client.query('BEGIN');
+        const seen = new Set<string>();
+        for (const c of clarifications) {
+          if (!c?.id || seen.has(c.id)) continue;
+          seen.add(c.id);
+          await client.query(
+            `INSERT INTO project_clarifications (id, project_id, user_id, user_name, user_avatar, text, timestamp, replies)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             ON CONFLICT (id) DO UPDATE SET
+               project_id = EXCLUDED.project_id,
+               user_id = EXCLUDED.user_id,
+               user_name = EXCLUDED.user_name,
+               user_avatar = EXCLUDED.user_avatar,
+               text = EXCLUDED.text,
+               timestamp = EXCLUDED.timestamp,
+               replies = EXCLUDED.replies`,
+            [c.id, c.projectId, c.userId, c.userName, c.userAvatar || null, c.text, c.timestamp, JSON.stringify(c.replies || [])]
+          );
+        }
+        if (seen.size > 0) {
+          const placeholders = Array.from(seen).map((_, i) => `$${i + 1}`).join(',');
+          await client.query(`DELETE FROM project_clarifications WHERE id NOT IN (${placeholders})`, Array.from(seen));
+        } else {
+          await client.query('DELETE FROM project_clarifications');
+        }
+        await client.query('COMMIT');
+      } catch (e) {
+        await client.query('ROLLBACK');
+        throw e;
+      } finally {
+        client.release();
+      }
+    });
+  }
+
+  async listProjectClarifications(): Promise<ProjectClarification[]> {
+    if (!isPostgresEnabled()) return [];
+    const res = await this.getPool().query('SELECT * FROM project_clarifications ORDER BY timestamp ASC');
+    return res.rows.map(r => ({
+      id: r.id,
+      projectId: r.project_id,
+      userId: r.user_id,
+      userName: r.user_name,
+      userAvatar: r.user_avatar || undefined,
+      text: r.text,
+      timestamp: r.timestamp,
+      replies: r.replies || []
+    }));
+  }
+
   async cleanAllData(): Promise<void> {
     if (!isPostgresEnabled()) return;
     const pool = this.getPool();
     const tables = [
+      'project_clarifications',
       'notifications',
       'audit_logs',
       'user_emails',

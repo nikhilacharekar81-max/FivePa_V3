@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { UserAccount } from '../types';
 import { Check, X, Shield, Lock, CreditCard, Bell, Eye, Calendar, Download, Sparkles } from 'lucide-react';
+import { fetchWithRetry } from '../utils/fetchRetry';
 
 interface SettingsPageProps {
   currentUser: UserAccount | null;
@@ -34,9 +35,29 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   const [featuredProposalCredits, setFeaturedProposalCredits] = useState(0);
 
   // Notification states
-  const [emailNotifs, setEmailNotifs] = useState('Instant alerts for all messages');
-  const [smsNotifs, setSmsNotifs] = useState('Enabled (+1 555-0192)');
-  const [marketingNotifs, setMarketingNotifs] = useState('Subscribed');
+  const [emailNotifs, setEmailNotifs] = useState(currentUser?.notificationPreferences?.emailNotifications || 'Instant alerts for all messages');
+  const [smsNotifs, setSmsNotifs] = useState(() => {
+    if (currentUser?.notificationPreferences?.smsNotifications) {
+      return currentUser.notificationPreferences.smsNotifications;
+    }
+    return currentUser?.mobile ? `Enabled (${currentUser.mobile})` : 'Disabled';
+  });
+  const [marketingNotifs, setMarketingNotifs] = useState(currentUser?.notificationPreferences?.marketingNotifs || 'Subscribed');
+
+  useEffect(() => {
+    if (currentUser) {
+      fetchWithRetry('/api/users/notification-preferences')
+        .then(res => res.ok ? res.json() : null)
+        .then(data => {
+          if (data) {
+            if (data.emailNotifications) setEmailNotifs(data.emailNotifications);
+            if (data.smsNotifications) setSmsNotifs(data.smsNotifications);
+            if (data.marketingNotifs) setMarketingNotifs(data.marketingNotifs);
+          }
+        })
+        .catch(err => console.error('Failed to load notification preferences:', err));
+    }
+  }, [currentUser?.id]);
 
   // Payments states
   const [currency, setCurrency] = useState('USD ($)');
@@ -58,6 +79,35 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   const showToast = (msg: string) => {
     setToastMsg(msg);
     setTimeout(() => setToastMsg(null), 3000);
+  };
+
+  const handleSaveNotificationPref = async (key: string, value: string) => {
+    setEditingField(null);
+    try {
+      const res = await fetchWithRetry('/api/users/notification-preferences', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [key]: value })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (currentUser && data.notificationPreferences) {
+          updateCurrentUser((prev) => prev ? {
+            ...prev,
+            notificationPreferences: {
+              ...(prev.notificationPreferences || {}),
+              ...data.notificationPreferences
+            }
+          } : null);
+        }
+        showToast('Notification preferences saved.');
+      } else {
+        showToast('Failed to save preferences.');
+      }
+    } catch (err) {
+      console.error('Error saving notification preferences:', err);
+      showToast('Network error saving preferences.');
+    }
   };
 
   const handleSaveField = (field: string) => {
@@ -420,25 +470,93 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
           {/* NOTIFICATIONS TAB */}
           {activeTab === 'notifications' && (
             <>
-              <div className="p-5 sm:px-8 flex items-center justify-between">
-                <div className="w-1/3 text-sm font-semibold text-slate-800">Email Notifications</div>
-                <div className="w-1/2 text-sm text-slate-600">{emailNotifs}</div>
-                <div className="w-1/6 text-right">
-                  <button onClick={() => showToast('Email notification preferences saved.')} className="text-emerald-600 hover:text-emerald-700 hover:underline text-xs font-semibold cursor-pointer">Edit</button>
+              <div className="p-5 sm:px-8 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:bg-slate-50/50 transition-colors">
+                <div className="w-full sm:w-1/3 text-sm font-semibold text-slate-800">Email Notifications</div>
+                <div className="w-full sm:w-1/2 text-sm text-slate-600 font-normal">
+                  {editingField === 'email_notifs' ? (
+                    <div className="space-y-2">
+                      <select 
+                        value={emailNotifs} 
+                        onChange={(e) => setEmailNotifs(e.target.value)} 
+                        className="px-3 py-1.5 border border-slate-300 rounded-lg text-xs w-full bg-white focus:outline-emerald-500"
+                      >
+                        <option>Instant alerts for all messages</option>
+                        <option>Daily digest</option>
+                        <option>Important updates only</option>
+                        <option>Disabled</option>
+                      </select>
+                      <div className="flex items-center gap-2 pt-1">
+                        <button onClick={() => handleSaveNotificationPref('emailNotifications', emailNotifs)} className="px-3 py-1 bg-emerald-600 text-white rounded-lg text-xs font-bold hover:bg-emerald-700 cursor-pointer">Save</button>
+                        <button onClick={() => setEditingField(null)} className="p-1 text-slate-400 hover:text-slate-700 text-xs font-bold cursor-pointer">Cancel</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <span>{emailNotifs}</span>
+                  )}
+                </div>
+                <div className="w-full sm:w-1/6 text-left sm:text-right">
+                  {editingField !== 'email_notifs' && (
+                    <button onClick={() => setEditingField('email_notifs')} className="text-emerald-600 hover:text-emerald-700 hover:underline text-xs font-semibold cursor-pointer">Edit</button>
+                  )}
                 </div>
               </div>
-              <div className="p-5 sm:px-8 flex items-center justify-between">
-                <div className="w-1/3 text-sm font-semibold text-slate-800">SMS Alerts</div>
-                <div className="w-1/2 text-sm text-slate-600">{smsNotifs}</div>
-                <div className="w-1/6 text-right">
-                  <button onClick={() => showToast('SMS preferences updated.')} className="text-emerald-600 hover:text-emerald-700 hover:underline text-xs font-semibold cursor-pointer">Edit</button>
+
+              <div className="p-5 sm:px-8 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:bg-slate-50/50 transition-colors">
+                <div className="w-full sm:w-1/3 text-sm font-semibold text-slate-800">SMS Alerts</div>
+                <div className="w-full sm:w-1/2 text-sm text-slate-600 font-normal">
+                  {editingField === 'sms_notifs' ? (
+                    <div className="space-y-2">
+                      <select 
+                        value={smsNotifs} 
+                        onChange={(e) => setSmsNotifs(e.target.value)} 
+                        className="px-3 py-1.5 border border-slate-300 rounded-lg text-xs w-full bg-white focus:outline-emerald-500"
+                      >
+                        {currentUser?.mobile && <option>Enabled ({currentUser.mobile})</option>}
+                        <option>Enabled</option>
+                        <option>Disabled</option>
+                      </select>
+                      <div className="flex items-center gap-2 pt-1">
+                        <button onClick={() => handleSaveNotificationPref('smsNotifications', smsNotifs)} className="px-3 py-1 bg-emerald-600 text-white rounded-lg text-xs font-bold hover:bg-emerald-700 cursor-pointer">Save</button>
+                        <button onClick={() => setEditingField(null)} className="p-1 text-slate-400 hover:text-slate-700 text-xs font-bold cursor-pointer">Cancel</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <span>{smsNotifs}</span>
+                  )}
+                </div>
+                <div className="w-full sm:w-1/6 text-left sm:text-right">
+                  {editingField !== 'sms_notifs' && (
+                    <button onClick={() => setEditingField('sms_notifs')} className="text-emerald-600 hover:text-emerald-700 hover:underline text-xs font-semibold cursor-pointer">Edit</button>
+                  )}
                 </div>
               </div>
-              <div className="p-5 sm:px-8 flex items-center justify-between">
-                <div className="w-1/3 text-sm font-semibold text-slate-800">Marketing & Newsletters</div>
-                <div className="w-1/2 text-sm text-slate-600">{marketingNotifs}</div>
-                <div className="w-1/6 text-right">
-                  <button onClick={() => showToast('Newsletter subscription updated.')} className="text-emerald-600 hover:text-emerald-700 hover:underline text-xs font-semibold cursor-pointer">Edit</button>
+
+              <div className="p-5 sm:px-8 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:bg-slate-50/50 transition-colors">
+                <div className="w-full sm:w-1/3 text-sm font-semibold text-slate-800">Marketing & Newsletters</div>
+                <div className="w-full sm:w-1/2 text-sm text-slate-600 font-normal">
+                  {editingField === 'marketing_notifs' ? (
+                    <div className="space-y-2">
+                      <select 
+                        value={marketingNotifs} 
+                        onChange={(e) => setMarketingNotifs(e.target.value)} 
+                        className="px-3 py-1.5 border border-slate-300 rounded-lg text-xs w-full bg-white focus:outline-emerald-500"
+                      >
+                        <option>Subscribed</option>
+                        <option>Unsubscribed</option>
+                      </select>
+                      <div className="flex items-center gap-2 pt-1">
+                        <button onClick={() => handleSaveNotificationPref('marketingNotifs', marketingNotifs)} className="px-3 py-1 bg-emerald-600 text-white rounded-lg text-xs font-bold hover:bg-emerald-700 cursor-pointer">Save</button>
+                        <button onClick={() => setEditingField(null)} className="p-1 text-slate-400 hover:text-slate-700 text-xs font-bold cursor-pointer">Cancel</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <span>{marketingNotifs}</span>
+                  )}
+                </div>
+                <div className="w-full sm:w-1/6 text-left sm:text-right">
+                  {editingField !== 'marketing_notifs' && (
+                    <button onClick={() => setEditingField('marketing_notifs')} className="text-emerald-600 hover:text-emerald-700 hover:underline text-xs font-semibold cursor-pointer">Edit</button>
+                  )}
                 </div>
               </div>
             </>

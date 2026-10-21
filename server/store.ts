@@ -41,7 +41,8 @@ import type {
   SiteFeeSettings,
   WorkstreamUploadRecord,
   Notification,
-  ExtensionRequest
+  ExtensionRequest,
+  ProjectClarification
 } from '../src/types.js';
 
 export type {
@@ -67,7 +68,8 @@ export type {
   SiteFeeSettings,
   WorkstreamUploadRecord,
   Notification,
-  ExtensionRequest
+  ExtensionRequest,
+  ProjectClarification
 };
 
 export let notifications: Notification[] = [];
@@ -117,6 +119,7 @@ export let projects: Project[] = [];
 export let proposals: Proposal[] = [];
 export let reviews: Review[] = [];
 export let messages: Message[] = [];
+export let projectClarifications: ProjectClarification[] = [];
 
 export let disputes: Dispute[] = [];
 export let refunds: Refund[] = [];
@@ -354,10 +357,15 @@ export async function writeJsonAtomic(filePath: string, data: any) {
   // Deprecated: No longer using JSON files for runtime data.
   return Promise.resolve();
 }
-
 export function saveMessagesToDisk() { 
   return postgresStore.saveMessages(messages).catch(err => {
     console.error('[PostgresStore ERROR] CRITICAL: Failed to save messages to database:', err);
+  });
+}
+
+export function saveProjectClarificationsToDisk() {
+  return postgresStore.saveProjectClarifications(projectClarifications).catch(err => {
+    console.error('[PostgresStore ERROR] Failed to save project clarifications:', err);
   });
 }
 export function saveOrdersToDisk() { 
@@ -524,6 +532,9 @@ export async function hydrateStoreFromPostgres() {
       const loadedNotifs = await postgresStore.listAllNotifications();
       if (loadedNotifs && loadedNotifs.length > 0) { notifications.length = 0; notifications.push(...loadedNotifs); }
 
+      const loadedClarifications = await postgresStore.listProjectClarifications();
+      if (loadedClarifications.length > 0) { projectClarifications.length = 0; projectClarifications.push(...loadedClarifications); }
+
       postgresStore.isHydrated = true;
       console.log('[PostgresStore] Successfully loaded all entities into memory.');
     } catch (loadErr) {
@@ -554,6 +565,7 @@ export async function cleanAllStoreData() {
   supportTickets.length = 0;
   auditLogs.length = 0;
   userEmails.length = 0;
+  projectClarifications.length = 0;
   for (const k of Object.keys(workstreamUploadIndex)) {
     delete workstreamUploadIndex[k];
   }

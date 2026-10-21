@@ -1,5 +1,5 @@
 import { Order, UserAccount } from '../../types';
-import { getAuthToken } from '../../utils/authToken';
+import { fetchWithRetry } from '../../utils/fetchRetry';
 
 export interface UseWorkstreamActionsProps {
   currentUser?: UserAccount | null;
@@ -33,13 +33,8 @@ export function useWorkstreamActions({
     const dueDate = new Date(Date.now() + (data.turnaroundDays || 7) * 86400000).toISOString().split('T')[0];
 
     try {
-      const token = getAuthToken();
-      const res = await fetch('/api/orders', {
+      const res = await fetchWithRetry('/api/orders', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
         body: JSON.stringify({
           title: data.title,
           sellerId: data.partnerId,

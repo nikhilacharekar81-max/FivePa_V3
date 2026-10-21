@@ -1,5 +1,5 @@
 import { Order, Message } from '../../types';
-import { getAuthToken } from '../../utils/authToken';
+import { fetchWithRetry } from '../../utils/fetchRetry';
 
 export interface UseWorkstreamDeliveryProps {
   selectedOrder?: Order | null;
@@ -28,13 +28,8 @@ export function useWorkstreamDelivery({
     if (!selectedOrder) return false;
 
     try {
-      const token = getAuthToken();
-      const res = await fetch(`/api/orders/${selectedOrder.id}/deliverable`, {
+      const res = await fetchWithRetry(`/api/orders/${selectedOrder.id}/deliverable`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
         body: JSON.stringify({
           notes: delivery.notes,
           reference: delivery.reference,
@@ -57,9 +52,7 @@ export function useWorkstreamDelivery({
       setSelectedOrder(updatedOrder);
 
       // Fetch fresh thread messages
-      const msgRes = await fetch(`/api/messages/${selectedOrder.id}`, {
-        headers: { ...(token ? { 'Authorization': `Bearer ${token}` } : {}) }
-      });
+      const msgRes = await fetchWithRetry(`/api/messages/${selectedOrder.id}`);
       if (msgRes.ok) {
         const freshMessages = await msgRes.json();
         if (Array.isArray(freshMessages)) {

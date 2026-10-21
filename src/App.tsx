@@ -65,6 +65,7 @@ import {
   UserEmail 
 } from './types';
 import { getAuthToken, setAuthToken, clearAuthToken, requestDemoSession } from './utils/authToken';
+import { fetchWithRetry } from './utils/fetchRetry';
 
 const CATEGORY_SLUGS: Record<string, string> = {
   'All': 'all',
@@ -778,9 +779,8 @@ export default function App({ initialPath, initialData }: { initialPath?: string
           ...(token ? { 'Authorization': `Bearer ${token}` } : {})
         };
 
-        const res = await fetch('/api/orders', {
+        const res = await fetchWithRetry('/api/orders', {
           method: 'POST',
-          headers: authHeaders,
           body: JSON.stringify({
             title: `Inquiry: ${gigTitle}`,
             buyerId: currentUid,
@@ -804,9 +804,8 @@ export default function App({ initialPath, initialData }: { initialPath?: string
 
         // Send initial inquiry message
         const initText = `Hi ${sellerName}, I am interested in ${gigId ? `your gig: "${gigTitle}"` : `your project`}. Let's discuss details!`;
-        await fetch('/api/messages', {
+        await fetchWithRetry('/api/messages', {
           method: 'POST',
-          headers: authHeaders,
           body: JSON.stringify({
             orderId: newChatOrd.id,
             senderId: currentUid,
@@ -825,7 +824,7 @@ export default function App({ initialPath, initialData }: { initialPath?: string
   // Category Management Handlers
   const handleToggleCategory = async (catId: string) => {
     try {
-      const res = await fetch(`/api/admin/categories/${catId}/toggle`, { method: 'PATCH' });
+      const res = await fetchWithRetry(`/api/admin/categories/${catId}/toggle`, { method: 'PATCH' });
       const data = await safeJson(res, null);
       if (data) setCategories(data);
     } catch (err) {
@@ -835,7 +834,7 @@ export default function App({ initialPath, initialData }: { initialPath?: string
 
   const handleToggleSubcategory = async (catId: string, subId: string) => {
     try {
-      const res = await fetch(`/api/admin/categories/${catId}/subcategories/${subId}/toggle`, { method: 'PATCH' });
+      const res = await fetchWithRetry(`/api/admin/categories/${catId}/subcategories/${subId}/toggle`, { method: 'PATCH' });
       const data = await safeJson(res, null);
       if (data) setCategories(data);
     } catch (err) {
@@ -849,9 +848,8 @@ export default function App({ initialPath, initialData }: { initialPath?: string
     if (!confirm(`Are you sure you want to bulk delete ${totalCount} selected items?`)) return;
 
     try {
-      const res = await fetch('/api/admin/categories/bulk-delete', {
+      const res = await fetchWithRetry('/api/admin/categories/bulk-delete', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           categoryIds: selectedCatIds,
           subcategoryPairs: selectedSubPairs
@@ -872,9 +870,8 @@ export default function App({ initialPath, initialData }: { initialPath?: string
     e.preventDefault();
     if (!newCategoryName.trim()) return;
     try {
-      const res = await fetch('/api/admin/categories', {
+      const res = await fetchWithRetry('/api/admin/categories', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: newCategoryName.trim(), slug: newCategorySlug.trim() })
       });
       const data = await safeJson(res, null);
@@ -888,9 +885,8 @@ export default function App({ initialPath, initialData }: { initialPath?: string
 
   const handleUpdateCategory = async (catId: string) => {
     try {
-      const res = await fetch(`/api/admin/categories/${catId}`, {
+      const res = await fetchWithRetry(`/api/admin/categories/${catId}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: editCatName.trim(), slug: editCatSlug.trim() })
       });
       const data = await safeJson(res, null);
@@ -904,7 +900,7 @@ export default function App({ initialPath, initialData }: { initialPath?: string
   const handleDeleteCategory = async (catId: string, name: string) => {
     if (!confirm(`Are you sure you want to delete category "${name}" and its subcategories?`)) return;
     try {
-      const res = await fetch(`/api/admin/categories/${catId}`, {
+      const res = await fetchWithRetry(`/api/admin/categories/${catId}`, {
         method: 'DELETE'
       });
       const data = await safeJson(res, null);
@@ -917,9 +913,8 @@ export default function App({ initialPath, initialData }: { initialPath?: string
   const handleAddSubcategory = async (catId: string) => {
     if (!newSubcategoryName.trim()) return;
     try {
-      const res = await fetch(`/api/admin/categories/${catId}/subcategories`, {
+      const res = await fetchWithRetry(`/api/admin/categories/${catId}/subcategories`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: newSubcategoryName.trim() })
       });
       const data = await safeJson(res, null);
@@ -933,9 +928,8 @@ export default function App({ initialPath, initialData }: { initialPath?: string
 
   const handleUpdateSubcategory = async (catId: string, subId: string) => {
     try {
-      const res = await fetch(`/api/admin/categories/${catId}/subcategories/${subId}`, {
+      const res = await fetchWithRetry(`/api/admin/categories/${catId}/subcategories/${subId}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: editSubName.trim() })
       });
       const data = await safeJson(res, null);
@@ -949,7 +943,7 @@ export default function App({ initialPath, initialData }: { initialPath?: string
   const handleDeleteSubcategory = async (catId: string, subId: string, subName: string) => {
     if (!confirm(`Delete subcategory "${subName}"?`)) return;
     try {
-      const res = await fetch(`/api/admin/categories/${catId}/subcategories/${subId}`, {
+      const res = await fetchWithRetry(`/api/admin/categories/${catId}/subcategories/${subId}`, {
         method: 'DELETE'
       });
       const data = await safeJson(res, null);
@@ -962,7 +956,7 @@ export default function App({ initialPath, initialData }: { initialPath?: string
   // Impersonation handlers
   const handleStartImpersonation = async (user: UserAccount) => {
     try {
-      await fetch(`/api/admin/users/${user.id}/impersonate`, { method: 'POST' });
+      await fetchWithRetry(`/api/admin/users/${user.id}/impersonate`, { method: 'POST' });
       setImpersonatedUser(user);
       fetchUserEmails(user.id);
       refresh();
@@ -978,7 +972,7 @@ export default function App({ initialPath, initialData }: { initialPath?: string
   const handleStopImpersonation = async () => {
     if (impersonatedUser) {
       try {
-        await fetch(`/api/admin/users/${impersonatedUser.id}/stop-impersonate`, { method: 'POST' });
+        await fetchWithRetry(`/api/admin/users/${impersonatedUser.id}/stop-impersonate`, { method: 'POST' });
       } catch (err) {
         console.error('Error stopping impersonation on backend:', err);
       }
@@ -1010,9 +1004,8 @@ export default function App({ initialPath, initialData }: { initialPath?: string
     e.preventDefault();
     if (!editingUser) return;
     try {
-      const res = await fetch(`/api/admin/users/${editingUser.id}`, {
+      const res = await fetchWithRetry(`/api/admin/users/${editingUser.id}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(editUserForm)
       });
       const updated = await res.json();
@@ -1028,7 +1021,7 @@ export default function App({ initialPath, initialData }: { initialPath?: string
 
   const handleToggleUserVerify = async (id: string) => {
     try {
-      const res = await fetch(`/api/admin/users/${id}/verify`, { method: 'PATCH' });
+      const res = await fetchWithRetry(`/api/admin/users/${id}/verify`, { method: 'PATCH' });
       const updated = await res.json();
       setUsersList(prev => prev.map(u => u.id === id ? updated : u));
       if (inspectingUser?.id === id) setInspectingUser(updated);
@@ -1041,9 +1034,8 @@ export default function App({ initialPath, initialData }: { initialPath?: string
   const handleUserStatusToggle = async (id: string, newStatus: 'active' | 'suspended' | 'restricted') => {
     try {
       const targetUser = usersList.find(u => u.id === id);
-      const res = await fetch(`/api/admin/users/${id}/status`, {
+      const res = await fetchWithRetry(`/api/admin/users/${id}/status`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: newStatus })
       });
       const updated = await res.json();
@@ -1063,7 +1055,7 @@ export default function App({ initialPath, initialData }: { initialPath?: string
   const handleDeleteUser = async (userId: string) => {
     if (!confirm('Are you sure you want to permanently delete this user account? All associated freelance gigs and buyer project postings will also be deleted. This action is irreversible.')) return;
     try {
-      await fetch(`/api/admin/users/${userId}`, { method: 'DELETE' });
+      await fetchWithRetry(`/api/admin/users/${userId}`, { method: 'DELETE' });
       setUsersList(prev => prev.filter(u => u.id !== userId));
       if (inspectingUser?.id === userId) setInspectingUser(null);
       alert('User account and all associated listings permanently deleted.');
@@ -1076,9 +1068,8 @@ export default function App({ initialPath, initialData }: { initialPath?: string
   // Admin Projects Management Handlers
   const handleUpdateProjectStatus = async (projectId: string, newStatus: Project['status']) => {
     try {
-      const res = await fetch(`/api/admin/projects/${projectId}/status`, {
+      const res = await fetchWithRetry(`/api/admin/projects/${projectId}/status`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: newStatus })
       });
       const updated = await res.json();
@@ -1095,7 +1086,7 @@ export default function App({ initialPath, initialData }: { initialPath?: string
 
   const handleToggleProjectFeature = async (projectId: string) => {
     try {
-      const res = await fetch(`/api/admin/projects/${projectId}/feature`, { method: 'PATCH' });
+      const res = await fetchWithRetry(`/api/admin/projects/${projectId}/feature`, { method: 'PATCH' });
       const updated = await res.json();
       setProjects(prev => prev.map(p => p.id === projectId ? updated : p));
       if (viewingProject?.id === projectId) setViewingProject(updated);
@@ -1183,9 +1174,8 @@ export default function App({ initialPath, initialData }: { initialPath?: string
   // Admin Gigs / Services Management Handlers
   const handleUpdateGigStatus = async (gigId: string, newStatus: Gig['status']) => {
     try {
-      const res = await fetch(`/api/admin/gigs/${gigId}/status`, {
+      const res = await fetchWithRetry(`/api/admin/gigs/${gigId}/status`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: newStatus })
       });
       const updated = await res.json();
@@ -1200,7 +1190,7 @@ export default function App({ initialPath, initialData }: { initialPath?: string
 
   const handleToggleGigFeature = async (gigId: string) => {
     try {
-      const res = await fetch(`/api/admin/gigs/${gigId}/feature`, { method: 'PATCH' });
+      const res = await fetchWithRetry(`/api/admin/gigs/${gigId}/feature`, { method: 'PATCH' });
       const updated = await res.json();
       setGigs(prev => prev.map(g => g.id === gigId ? updated : g));
       if (viewingGig?.id === gigId) setViewingGig(updated);
@@ -1231,9 +1221,8 @@ export default function App({ initialPath, initialData }: { initialPath?: string
     try {
       let updatedGig = { ...editingGig, ...editGigForm };
       try {
-        const res = await fetch(`/api/gigs/${editingGig.id}`, {
+        const res = await fetchWithRetry(`/api/gigs/${editingGig.id}`, {
           method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(editGigForm)
         });
         if (res.ok) {
@@ -1243,9 +1232,8 @@ export default function App({ initialPath, initialData }: { initialPath?: string
         console.warn('Gig patch error:', err);
       }
       try {
-        await fetch(`/api/admin/gigs/${editingGig.id}`, {
+        await fetchWithRetry(`/api/admin/gigs/${editingGig.id}`, {
           method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(editGigForm)
         });
       } catch (e) {
@@ -1272,9 +1260,8 @@ export default function App({ initialPath, initialData }: { initialPath?: string
     e.preventDefault();
     if (!moderatingGig) return;
     try {
-      const res = await fetch(`/api/admin/gigs/${moderatingGig.id}`, {
+      const res = await fetchWithRetry(`/api/admin/gigs/${moderatingGig.id}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           moderationStatus: gigModerationStatus,
           moderationNotes: gigModerationNotes
@@ -1307,12 +1294,12 @@ export default function App({ initialPath, initialData }: { initialPath?: string
     setGigs(prev => prev.filter(g => g.id !== gigId));
 
     try {
-      await fetch(`/api/gigs/${gigId}`, { method: 'DELETE' });
+      await fetchWithRetry(`/api/gigs/${gigId}`, { method: 'DELETE' });
     } catch (e) {
       console.warn('Delete gig error:', e);
     }
     try {
-      await fetch(`/api/admin/gigs/${gigId}`, { method: 'DELETE' });
+      await fetchWithRetry(`/api/admin/gigs/${gigId}`, { method: 'DELETE' });
     } catch (e) {
       // admin fallback
     }
@@ -1339,9 +1326,8 @@ export default function App({ initialPath, initialData }: { initialPath?: string
     e.preventDefault();
     if (!editingProposal) return;
     try {
-      const res = await fetch(`/api/admin/proposals/${editingProposal.id}`, {
+      const res = await fetchWithRetry(`/api/admin/proposals/${editingProposal.id}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(editProposalForm)
       });
       const updated = await res.json();
@@ -1356,9 +1342,8 @@ export default function App({ initialPath, initialData }: { initialPath?: string
 
   const handleUpdateProposalStatus = async (proposalId: string, newStatus: Proposal['status']) => {
     try {
-      const res = await fetch(`/api/admin/proposals/${proposalId}/status`, {
+      const res = await fetchWithRetry(`/api/admin/proposals/${proposalId}/status`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: newStatus })
       });
       const updated = await res.json();
@@ -1373,7 +1358,7 @@ export default function App({ initialPath, initialData }: { initialPath?: string
   const handleDeleteProposal = async (proposalId: string) => {
     if (!confirm('Are you sure you want to permanently delete this proposal? This action is irreversible.')) return;
     try {
-      await fetch(`/api/admin/proposals/${proposalId}`, { method: 'DELETE' });
+      await fetchWithRetry(`/api/admin/proposals/${proposalId}`, { method: 'DELETE' });
       setProposals(prev => prev.filter(p => p.id !== proposalId));
       if (viewingProposal?.id === proposalId) setViewingProposal(null);
       alert('Proposal deleted successfully.');
@@ -1400,9 +1385,8 @@ export default function App({ initialPath, initialData }: { initialPath?: string
 
     setIsSubmittingSignup(true);
     try {
-      const res = await fetch('/api/auth/signup', {
+      const res = await fetchWithRetry('/api/auth/signup', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           email: signupEmail.trim(),
           password: signupPassword,
@@ -1446,9 +1430,8 @@ export default function App({ initialPath, initialData }: { initialPath?: string
   const handleVerifyEmailSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const res = await fetch('/api/auth/verify-email', {
+      const res = await fetchWithRetry('/api/auth/verify-email', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: verifyEmail, code: emailCodeInput })
       });
       const data = await res.json();
@@ -1468,9 +1451,8 @@ export default function App({ initialPath, initialData }: { initialPath?: string
 
   const handleResendEmailCode = async () => {
     try {
-      const res = await fetch('/api/auth/resend-email-code', {
+      const res = await fetchWithRetry('/api/auth/resend-email-code', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: verifyEmail })
       });
       const data = await res.json();
@@ -1486,9 +1468,8 @@ export default function App({ initialPath, initialData }: { initialPath?: string
   const handleVerifySmsSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const res = await fetch('/api/auth/verify-sms', {
+      const res = await fetchWithRetry('/api/auth/verify-sms', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mobile: verifyMobile, code: smsCodeInput })
       });
       const data = await res.json();
@@ -1508,9 +1489,8 @@ export default function App({ initialPath, initialData }: { initialPath?: string
 
   const handleResendSmsCode = async () => {
     try {
-      const res = await fetch('/api/auth/resend-sms-code', {
+      const res = await fetchWithRetry('/api/auth/resend-sms-code', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mobile: verifyMobile })
       });
       const data = await res.json();
@@ -1544,9 +1524,8 @@ export default function App({ initialPath, initialData }: { initialPath?: string
         payload.code = loginCode.trim();
       }
 
-      const res = await fetch('/api/auth/login', {
+      const res = await fetchWithRetry('/api/auth/login', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
       const data = await res.json();
@@ -1616,9 +1595,8 @@ export default function App({ initialPath, initialData }: { initialPath?: string
   const handleForgotRequest = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const res = await fetch('/api/auth/forgot-password/request', {
+      const res = await fetchWithRetry('/api/auth/forgot-password/request', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ emailOrMobile: forgotQuery })
       });
       const data = await res.json();
@@ -1634,9 +1612,8 @@ export default function App({ initialPath, initialData }: { initialPath?: string
   const handleForgotVerify = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const res = await fetch('/api/auth/forgot-password/verify', {
+      const res = await fetchWithRetry('/api/auth/forgot-password/verify', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ emailOrMobile: forgotQuery, code: forgotCode })
       });
       const data = await res.json();
@@ -1659,9 +1636,8 @@ export default function App({ initialPath, initialData }: { initialPath?: string
       return;
     }
     try {
-      const res = await fetch('/api/auth/forgot-password/reset', {
+      const res = await fetchWithRetry('/api/auth/forgot-password/reset', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ emailOrMobile: forgotQuery, code: forgotCode, newPassword, confirmPassword: confirmNewPassword })
       });
       const data = await res.json();
@@ -1687,9 +1663,8 @@ export default function App({ initialPath, initialData }: { initialPath?: string
 
   const handleResolveDispute = async (id: string, resolutionStatus: string) => {
     try {
-      const res = await fetch(`/api/admin/disputes/${id}/resolve`, {
+      const res = await fetchWithRetry(`/api/admin/disputes/${id}/resolve`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: resolutionStatus, notes: disputeNotesText || 'Resolved by Super Admin.' })
       });
       const updated = await res.json();
@@ -1705,9 +1680,8 @@ export default function App({ initialPath, initialData }: { initialPath?: string
   const handleSupportReply = async (ticketId: string) => {
     if (!ticketReplyText.trim()) return;
     try {
-      const res = await fetch(`/api/admin/tickets/${ticketId}/reply`, {
+      const res = await fetchWithRetry(`/api/admin/tickets/${ticketId}/reply`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: ticketReplyText })
       });
       const updated = await res.json();
@@ -1718,18 +1692,26 @@ export default function App({ initialPath, initialData }: { initialPath?: string
     }
   };
 
-  const handleCreateSupportTicket = async (e: React.FormEvent) => {
+  const handleCreateSupportTicket = async (e: React.FormEvent, isAppealExplicit?: boolean) => {
     e.preventDefault();
     if (!supportSubject.trim() || !supportMessage.trim()) return;
     try {
       const activeUserId = impersonatedUser ? impersonatedUser.id : (currentUser ? currentUser.id : '');
-      const res = await fetch('/api/support-tickets', {
+      const isAppeal = Boolean(
+        isAppealExplicit ||
+        currentUser?.status === 'suspended' ||
+        currentUser?.status === 'restricted' ||
+        supportSubject.toLowerCase().includes('appeal')
+      );
+      const res = await fetchWithRetry('/api/support-tickets', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-user-id': activeUserId },
+        headers: { 'x-user-id': activeUserId },
         body: JSON.stringify({
           subject: supportSubject,
           text: supportMessage,
-          priority: 'medium'
+          priority: isAppeal ? 'high' : 'medium',
+          isAppeal,
+          category: isAppeal ? 'appeal' : 'general'
         })
       });
       if (res.ok) {
@@ -1738,6 +1720,11 @@ export default function App({ initialPath, initialData }: { initialPath?: string
         setSupportSubject('');
         setSupportMessage('');
         setIsSupportModalOpen(false);
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        if (errData.error) {
+          alert(errData.error);
+        }
       }
     } catch (e) {
       console.error(e);
@@ -1746,7 +1733,7 @@ export default function App({ initialPath, initialData }: { initialPath?: string
 
   const handleApprovePayout = async (payoutId: string) => {
     try {
-      const res = await fetch(`/api/admin/payouts/${payoutId}/approve`, { method: 'PATCH' });
+      const res = await fetchWithRetry(`/api/admin/payouts/${payoutId}/approve`, { method: 'PATCH' });
       const updated = await res.json();
       setPayouts(prev => prev.map(p => p.id === payoutId ? updated : p));
       refresh();
@@ -1756,7 +1743,7 @@ export default function App({ initialPath, initialData }: { initialPath?: string
   };
   const handleProcessPayout = async (payoutId: string) => {
     try {
-      const res = await fetch(`/api/admin/payouts/${payoutId}/process`, { method: 'PATCH' });
+      const res = await fetchWithRetry(`/api/admin/payouts/${payoutId}/process`, { method: 'PATCH' });
       const updated = await res.json();
       setPayouts(prev => prev.map(p => p.id === payoutId ? updated : p));
       refresh();
@@ -1766,7 +1753,7 @@ export default function App({ initialPath, initialData }: { initialPath?: string
   };
   const handleFailPayout = async (payoutId: string) => {
     try {
-      const res = await fetch(`/api/admin/payouts/${payoutId}/fail`, { method: 'PATCH' });
+      const res = await fetchWithRetry(`/api/admin/payouts/${payoutId}/fail`, { method: 'PATCH' });
       const updated = await res.json();
       setPayouts(prev => prev.map(p => p.id === payoutId ? updated : p));
       refresh();
@@ -1782,12 +1769,8 @@ export default function App({ initialPath, initialData }: { initialPath?: string
     }
     try {
       const token = getAuthToken();
-      const res = await fetch('/api/orders', {
+      const res = await fetchWithRetry('/api/orders', {
         method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
         body: JSON.stringify({
           title,
           buyerId: impersonatedUser ? impersonatedUser.id : currentUser.id,
@@ -1840,12 +1823,8 @@ export default function App({ initialPath, initialData }: { initialPath?: string
 
     const token = getAuthToken();
     try {
-      await fetch(`/api/orders/${selectedOrder.id}/message`, {
+      await fetchWithRetry(`/api/orders/${selectedOrder.id}/message`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
         body: JSON.stringify({
           text: `Uploaded file: ${randomFile.name}`,
           type: 'file',
@@ -1867,12 +1846,8 @@ export default function App({ initialPath, initialData }: { initialPath?: string
 
     try {
       const token = getAuthToken();
-      await fetch(`/api/orders/${selectedOrder.id}/message`, {
+      await fetchWithRetry(`/api/orders/${selectedOrder.id}/message`, {
         method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
         body: JSON.stringify({ orderId: selectedOrder.id, text: newMessageText, type: 'message' })
       });
       fetchMessages(selectedOrder.id);
@@ -1896,12 +1871,8 @@ export default function App({ initialPath, initialData }: { initialPath?: string
     }
     try {
       const token = getAuthToken();
-      const res = await fetch('/api/proposals', {
+      const res = await fetchWithRetry('/api/proposals', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
         body: JSON.stringify({
           projectId,
           freelancerId: impersonatedUser ? impersonatedUser.id : currentUser.id,
@@ -1941,12 +1912,8 @@ export default function App({ initialPath, initialData }: { initialPath?: string
     }
     try {
       const token = getAuthToken();
-      const res = await fetch('/api/proposals', {
+      const res = await fetchWithRetry('/api/proposals', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
         body: JSON.stringify({
           projectId,
           freelancerId: impersonatedUser ? impersonatedUser.id : currentUser.id,
@@ -2005,9 +1972,8 @@ export default function App({ initialPath, initialData }: { initialPath?: string
     });
 
     try {
-      await fetch(`/api/gigs/${gigId}`, {
+      await fetchWithRetry(`/api/gigs/${gigId}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ featured: true })
       });
     } catch (e) {
@@ -2035,12 +2001,8 @@ export default function App({ initialPath, initialData }: { initialPath?: string
     }
     try {
       const token = getAuthToken();
-      const res = await fetch('/api/gigs', {
+      const res = await fetchWithRetry('/api/gigs', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
         body: JSON.stringify({
           freelancerId: impersonatedUser ? impersonatedUser.id : currentUser.id,
           freelancerName: impersonatedUser ? impersonatedUser.name : currentUser.name,
@@ -2078,12 +2040,8 @@ export default function App({ initialPath, initialData }: { initialPath?: string
     }
     try {
       const token = getAuthToken();
-      const res = await fetch('/api/projects', {
+      const res = await fetchWithRetry('/api/projects', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
         body: JSON.stringify({
           buyerId: impersonatedUser ? impersonatedUser.id : currentUser.id,
           buyerName: impersonatedUser ? impersonatedUser.name : currentUser.name,
@@ -4468,6 +4426,7 @@ export default function App({ initialPath, initialData }: { initialPath?: string
         supportMessage={supportMessage}
         setSupportMessage={setSupportMessage}
         onSubmitTicket={handleCreateSupportTicket}
+        isAppeal={currentUser?.status === 'suspended' || currentUser?.status === 'restricted' || supportSubject.toLowerCase().includes('appeal')}
       />
 
       <UserSwitchModal

@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, Dispatch, SetStateAction } from 'react';
 import { Message } from '../../types';
 import { getAuthToken, clearAuthToken } from '../../utils/authToken';
+import { fetchWithRetry } from '../../utils/fetchRetry';
 
 /**
  * Hook responsible for managing workstream messages state, per-workstream cache isolation,
@@ -36,17 +37,7 @@ export function useWorkstreamMessages(options: UseWorkstreamMessagesOptions = {}
     activeFetchOrderIdRef.current = orderId;
 
     try {
-      const token = getAuthToken();
-      if (!token) {
-        // User is not authenticated; skip fetching messages to prevent 401 errors
-        return;
-      }
-
-      const res = await fetch(`/api/messages/${orderId}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
+      const res = await fetchWithRetry(`/api/messages/${orderId}`);
 
       if (res.status === 401) {
         // Token has expired or is invalid; clear stale credentials cleanly
@@ -92,8 +83,6 @@ export function useWorkstreamMessages(options: UseWorkstreamMessagesOptions = {}
     const activeOrderId = targetOrderId || activeOrderIdRef.current || activeFetchOrderIdRef.current;
     if (!activeOrderId || !text.trim()) return;
 
-    const token = getAuthToken();
-    if (!token) return;
     const clientMessageId = 'msg_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6);
 
     const tempMessage: Message = {
@@ -115,12 +104,8 @@ export function useWorkstreamMessages(options: UseWorkstreamMessagesOptions = {}
 
     const attemptSend = async () => {
       try {
-        const res = await fetch(`/api/orders/${activeOrderId}/message`, {
+        const res = await fetchWithRetry(`/api/orders/${activeOrderId}/message`, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-          },
           body: JSON.stringify({
             text: text.trim(),
             type,
@@ -152,7 +137,6 @@ export function useWorkstreamMessages(options: UseWorkstreamMessagesOptions = {}
     metadata: Record<string, any>,
     onError: (msg: string) => void
   ) => {
-    const token = getAuthToken();
     const clientMessageId = 'evt_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6);
 
     const tempMessage: Message = {
@@ -171,12 +155,8 @@ export function useWorkstreamMessages(options: UseWorkstreamMessagesOptions = {}
 
     const sendToServer = async () => {
       try {
-        const res = await fetch(`/api/orders/${orderId}/message`, {
+        const res = await fetchWithRetry(`/api/orders/${orderId}/message`, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-          },
           body: JSON.stringify({
             text,
             type,
@@ -202,21 +182,14 @@ export function useWorkstreamMessages(options: UseWorkstreamMessagesOptions = {}
 
   const retryMessage = useCallback(async (msg: Message) => {
     if (!msg || !msg.orderId) return;
-    const token = getAuthToken();
-    if (!token) return;
-
     const clientMessageId = msg.metadata?.clientMessageId || msg.id;
 
     // Optimistically update failed message state back to sending
     setMessages(prev => prev.map(m => (m.id === msg.id || m.id === clientMessageId) ? { ...m, status: 'sending' } : m));
 
     try {
-      const res = await fetch(`/api/orders/${msg.orderId}/message`, {
+      const res = await fetchWithRetry(`/api/orders/${msg.orderId}/message`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
         body: JSON.stringify({
           text: msg.text,
           type: msg.type || 'message',
@@ -249,4 +222,3 @@ export function useWorkstreamMessages(options: UseWorkstreamMessagesOptions = {}
     sendEvent
   };
 }
-

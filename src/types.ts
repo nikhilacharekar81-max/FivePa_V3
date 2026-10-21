@@ -100,6 +100,24 @@ export interface Project {
   clarificationQuestions?: Array<any>;
 }
 
+export interface ProjectClarification {
+  id: string;
+  projectId: string;
+  userId: string;
+  userName: string;
+  userAvatar?: string;
+  text: string;
+  timestamp: string;
+  replies?: Array<{
+    id: string;
+    userId: string;
+    userName: string;
+    userAvatar?: string;
+    text: string;
+    timestamp: string;
+  }>;
+}
+
 export interface Proposal {
   id: string;
   projectId: string;
@@ -157,7 +175,8 @@ export interface ExtensionRequest {
   originalDueDate: string;
   requestedDueDate: string;
   requestedAt: string;
-  status: 'pending' | 'approved' | 'rejected';
+  responseDeadline?: string;
+  status: 'pending' | 'approved' | 'rejected' | 'expired';
   respondedBy?: string;
   respondedAt?: string;
   rejectionReason?: string;
@@ -279,6 +298,11 @@ export interface UserAccount {
   buyerMembershipTier?: string;
   kycStatus?: string;
   ActiveRole?: string;
+  notificationPreferences?: {
+    emailNotifications?: string;
+    smsNotifications?: string;
+    marketingNotifs?: string;
+  };
 }
 
 export type User = UserAccount;
@@ -379,7 +403,14 @@ export interface SupportTicket {
   priority: 'low' | 'medium' | 'high' | 'urgent';
   status: 'open' | 'in_progress' | 'resolved' | 'closed';
   createdAt: string;
-  messages: { sender: string; text: string; timestamp: string }[];
+  messages: { sender: string; text: string; timestamp: string; appealContext?: any }[];
+  isAppeal?: boolean;
+  category?: string;
+  appealContext?: {
+    accountStatus: string;
+    flagReason?: string;
+    appealedAt: string;
+  };
 }
 
 export interface AuditLog {
@@ -428,6 +459,7 @@ export interface Message {
     isCancelledOrder?: boolean;
     reply?: any;
     status?: string;
+    autoProcessed?: boolean;
   };
   status?: 'sending' | 'sent' | 'failed';
 }

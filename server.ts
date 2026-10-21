@@ -38,6 +38,8 @@ import {
   hydrateStoreFromPostgres,
   cleanAllStoreData,
   notifications,
+  projectClarifications,
+  saveProjectClarificationsToDisk,
   type User,
   type Gig,
   type Project,
@@ -59,7 +61,8 @@ import {
   type WorkstreamOfferKind,
   type WorkstreamUploadRecord,
   workstreamUploadIndex,
-  saveWorkstreamUploadIndex
+  saveWorkstreamUploadIndex,
+  type ProjectClarification
 } from './server/store.js';
 export { auditLogs } from './server/store.js';
 export { saveOrdersToDisk } from './server/store.js';
@@ -411,7 +414,7 @@ app.post('/api/auth/signup', async (req, res) => {
     const emailCode = generate6DigitCode();
     emailVerificationCodes.set(normalizedEmail, {
       code: emailCode,
-      expiresAt: Date.now() + 15 * 60 * 1000,
+      expiresAt: Date.now() + 30 * 60 * 1000,
       lastResendAt: Date.now(),
       attempts: 0
     });
@@ -422,7 +425,7 @@ app.post('/api/auth/signup', async (req, res) => {
       const smsCode = generate6DigitCode();
       smsVerificationCodes.set(trimmedMobile, {
         code: smsCode,
-        expiresAt: Date.now() + 15 * 60 * 1000,
+        expiresAt: Date.now() + 30 * 60 * 1000,
         lastResendAt: Date.now(),
         attempts: 0
       });
@@ -497,7 +500,7 @@ app.post('/api/auth/resend-email-code', (req, res) => {
   const newCode = generate6DigitCode();
   emailVerificationCodes.set(normalizedEmail, {
     code: newCode,
-    expiresAt: now + 15 * 60 * 1000,
+    expiresAt: now + 30 * 60 * 1000,
     lastResendAt: now,
     attempts: 0
   });
@@ -564,7 +567,7 @@ app.post('/api/auth/resend-sms-code', (req, res) => {
   const newCode = generate6DigitCode();
   smsVerificationCodes.set(cleanMobile, {
     code: newCode,
-    expiresAt: now + 15 * 60 * 1000,
+    expiresAt: now + 30 * 60 * 1000,
     lastResendAt: now,
     attempts: 0
   });
@@ -585,27 +588,13 @@ function sanitizeAndCreateMessage(
 
   // Check for off-platform contact info
   const offPlatformRegex = /(?:\+?\d{1,4}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}|\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b|(?:https?:\/\/)?(?:www\.)?(?:[a-zA-Z0-9-]+\.)+(?:com|net|org|io|me|co)\b/gi;
-  if (!isSystemOrStaff && offPlatformRegex.test(text)) {
-    text = `[WARNING: For your protection, keeping communication and payments on the platform helps preserve your marketplace protections.]\n\n${text}`;
-  }
-
-  let type = body.type;
-  if (!isSystemOrStaff && (type === 'system' || type === 'deliverable')) {
-    type = 'message';
-  }
-  if (type !== 'message' && type !== 'file') {
-    type = 'message';
-  }
-  if (type !== 'file' && !text) {
-    throw new Error('Message text is required.');
-  }
-  if (text.length > 5000) {
-    throw new Error('Message is too long.');
-  }
-
   const metadata: any = {};
   if (body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata)) {
     Object.assign(metadata, body.metadata);
+  }
+
+  if (!isSystemOrStaff && offPlatformRegex.test(text)) {
+    metadata.offPlatformWarning = true;
   }
 
   // 1. Offer cards (proposal / invoice / deposit) are created only by the server from real offer records.
@@ -657,7 +646,7 @@ function sanitizeAndCreateMessage(
     senderName: sender.name,
     text: text.slice(0, 5000),
     timestamp: new Date().toISOString(),
-    type,
+    type: body.type || 'text',
     fileInfo: fileCheck.fileInfo,
     metadata
   };
@@ -2143,6 +2132,48 @@ app.get('/api/users', (req, res) => {
   res.json(publicUsers);
 });
 
+app.get('/api/users/notification-preferences', requireAuth, (req, res) => {
+  const authUserId = (req as any).authenticatedUserId;
+  const user = users.find(u => u.id === authUserId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  const prefs = user.notificationPreferences || {};
+  res.json({
+    emailNotifications: prefs.emailNotifications || 'Instant alerts for all messages',
+    smsNotifications: prefs.smsNotifications || (user.mobile ? `Enabled (${user.mobile})` : 'Disabled'),
+    marketingNotifs: prefs.marketingNotifs || 'Subscribed',
+    mobile: user.mobile || null
+  });
+});
+
+app.patch('/api/users/notification-preferences', requireAuth, (req, res) => {
+  const authUserId = (req as any).authenticatedUserId;
+  const user = users.find(u => u.id === authUserId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  const { emailNotifications, smsNotifications, marketingNotifs } = req.body || {};
+
+  if (!user.notificationPreferences) {
+    user.notificationPreferences = {};
+  }
+
+  if (typeof emailNotifications === 'string') {
+    user.notificationPreferences.emailNotifications = emailNotifications;
+  }
+  if (typeof smsNotifications === 'string') {
+    user.notificationPreferences.smsNotifications = smsNotifications;
+  }
+  if (typeof marketingNotifs === 'string') {
+    user.notificationPreferences.marketingNotifs = marketingNotifs;
+  }
+
+  saveUsersToPostgres();
+  res.json({
+    success: true,
+    notificationPreferences: user.notificationPreferences
+  });
+});
+
 // Public Marketplace Endpoints: returns only published, active, approved listings without internal moderation/private metadata
 app.get('/api/gigs', (req, res) => {
   const publicGigs = gigs.filter(isGigPublic).map(sanitizePublicGig);
@@ -2153,15 +2184,28 @@ function getBuyerStats(buyerId: string) {
   const buyerOrders = orders.filter(o => o.buyerId === buyerId);
   const buyerProjects = projects.filter(p => p.buyerId === buyerId);
   
-  // Projects that reached a decision: hired (in_progress/completed) or closed (unpublished)
-  const decidedProjects = buyerProjects.filter(p => p.status === 'completed' || p.status === 'in_progress' || p.status === 'unpublished');
-  // Projects hired: in_progress or completed
-  const hiredProjects = buyerProjects.filter(p => p.status === 'completed' || p.status === 'in_progress');
-  
-  const totalSpent = buyerOrders.reduce((sum, o) => sum + (o.status === 'completed' ? o.amount : 0), 0);
+  let hiredCount = 0;
+  let decidedCount = 0;
+
+  for (const proj of buyerProjects) {
+    // Authoritative check for hire: project is in_progress (which happens upon acceptance) 
+    // or has at least one proposal marked as accepted.
+    const hasAcceptedProposal = proposals.some(p => p.projectId === proj.id && p.status === 'accepted');
+    const isHired = hasAcceptedProposal || proj.status === 'in_progress';
+    
+    // A hiring decision is reached if the project is hired OR if it reached completion (closed) 
+    // after having received at least one proposal.
+    const isDecided = isHired || (proj.status === 'completed' && (proj.proposalsCount || 0) > 0);
+
+    if (isHired) hiredCount++;
+    if (isDecided) decidedCount++;
+  }
+
+  // Threshold of 3 decided projects to show a rate, otherwise null ("Not enough history").
+  const hireRate = decidedCount >= 3 ? hiredCount / decidedCount : null;
+
+  const totalSpent = buyerOrders.filter(o => o.status === 'completed').reduce((sum, o) => sum + (o.amount || 0), 0);
   const completedCount = buyerOrders.filter(o => o.status === 'completed').length;
-  
-  const hireRate = decidedProjects.length >= 3 ? hiredProjects.length / decidedProjects.length : null;
 
   return {
     buyerSpent: totalSpent,
@@ -2223,6 +2267,66 @@ app.get('/api/projects/:id', (req, res) => {
   return res.status(404).json({ error: 'Project not found or unavailable' });
 });
 
+app.get('/api/projects/:id/clarifications', (req, res) => {
+  const projectId = req.params.id;
+  const projectClarificationsList = projectClarifications.filter(c => c.projectId === projectId);
+  res.json(projectClarificationsList);
+});
+
+app.post('/api/projects/:id/clarifications', requireAuth, requireActiveStatus, async (req, res) => {
+  const projectId = req.params.id;
+  const project = projects.find(p => p.id === projectId);
+  if (!project) return res.status(404).json({ error: 'Project not found' });
+
+  const userId = (req as any).authenticatedUserId;
+  const user = (req as any).authenticatedUser;
+  const { text, replyToId } = req.body;
+
+  if (!text || !text.trim()) return res.status(400).json({ error: 'Text is required.' });
+
+  if (replyToId) {
+    const parent = projectClarifications.find(c => c.id === replyToId && c.projectId === projectId);
+    if (!parent) return res.status(404).json({ error: 'Parent question not found.' });
+    
+    const isOwner = project.buyerId === userId;
+    const isStaff = isStaffUser(user);
+    if (!isOwner && !isStaff) return res.status(403).json({ error: 'Only the project owner can respond to clarifications.' });
+
+    if (!parent.replies) parent.replies = [];
+    parent.replies.push({
+      id: 'rep_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+      userId,
+      userName: user.name,
+      userAvatar: user.avatar,
+      text: text.trim(),
+      timestamp: new Date().toISOString()
+    });
+  } else {
+    const newClarification: ProjectClarification = {
+      id: 'clar_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+      projectId,
+      userId,
+      userName: user.name,
+      userAvatar: user.avatar,
+      text: text.trim(),
+      timestamp: new Date().toISOString(),
+      replies: []
+    };
+    projectClarifications.push(newClarification);
+    
+    createNotification({
+      userId: project.buyerId,
+      type: 'project',
+      title: 'New Clarification Question',
+      message: `${user.name} asked a question about "${project.title}".`,
+      link: `/project/${project.slug || project.id}`
+    });
+  }
+
+  await saveProjectClarificationsToDisk();
+  res.json({ success: true });
+});
+
 // Authenticated Owner Listings
 app.get('/api/my/gigs', requireAuth, (req, res) => {
   const authUserId = (req as any).authenticatedUserId;
@@ -2269,7 +2373,7 @@ app.get('/api/proposals', (req, res) => {
   res.json(userProposals.map(enrichProposalWithWorkstream));
 });
 
-app.get('/api/orders', requireAuth, (req, res) => {
+app.get('/api/orders', requireAuth, requireActiveStatus, (req, res) => {
   // Login is required: previously a request with no token was treated like an admin and received every order.
   const authUserId = resolveAuthenticatedUserId(req)!;
   const caller = users.find(u => u.id === authUserId);
@@ -2381,6 +2485,7 @@ app.post('/api/orders/:id/extension-request', requireAuth, requireActiveStatus, 
       originalDueDate: order.dueDate,
       requestedDueDate: new Date(new Date(order.dueDate).getTime() + numDays * 86400000).toISOString().split('T')[0],
       requestedAt: new Date().toISOString(),
+      responseDeadline: new Date(Date.now() + 48 * 3600 * 1000).toISOString(), // 48-hour response window
       status: 'pending'
     };
     if (!order.extensionRequests) order.extensionRequests = [];
@@ -2426,6 +2531,28 @@ app.post('/api/orders/:id/extension-request/respond', requireAuth, requireActive
     if (userId !== order.buyerId) return res.status(403).json({ error: 'Only the buyer can respond.' });
     const request = order.extensionRequests?.find(r => r.status === 'pending');
     if (!request) return res.status(404).json({ error: 'No pending request.' });
+
+    // Enforcement: Server-side check for response deadline
+    if (request.responseDeadline && new Date() > new Date(request.responseDeadline)) {
+      request.status = 'expired';
+      await postgresStore.saveOrders(orders);
+      
+      const expireMsg: Message = {
+        id: 'msg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+        orderId: order.id,
+        senderId: 'system',
+        senderName: 'System',
+        text: 'System: The delivery extension request has expired without a response.',
+        timestamp: new Date().toISOString(),
+        type: 'system',
+        metadata: { action: 'time_extension_expired' } as any
+      };
+      recordMessage(expireMsg);
+      await postgresStore.saveMessages(messages);
+      broadcastMessage(expireMsg, order.id);
+      
+      return res.status(410).json({ error: 'This extension request has expired.' });
+    }
 
     const { action, reason } = req.body;
     if (action === 'approve') {
@@ -3238,7 +3365,7 @@ function handlePayoutRequest(req: Request, res: Response) {
 }
 
 // Deposit Funds into User Account (Simulated - Strictly Development Only)
-app.post('/api/payments/deposit', requireAuth, rateLimit(10, 60_000), (req, res) => {
+app.post('/api/payments/deposit', requireAuth, requireActiveStatus, rateLimit(10, 60_000), (req, res) => {
   try {
     // Simulated deposits are strictly development/test functionality; reject in production unconditionally
     if (!areSimulatedDepositsAllowed()) {
@@ -3366,7 +3493,7 @@ app.post('/api/payments/webhook', express.raw({ type: 'application/json' }), (re
 });
 
 // Withdraw Funds from User Account
-app.post('/api/payments/withdraw', requireAuth, rateLimit(10, 60_000), handlePayoutRequest);
+app.post('/api/payments/withdraw', requireAuth, requireActiveStatus, rateLimit(10, 60_000), handlePayoutRequest);
 
 function validateOrderReleasePreconditions(order: Order, isAdmin = false, isInvoiceApproval = false): { status: number; error: string } | null {
   if (order.status === 'completed') {
@@ -3405,7 +3532,7 @@ function validateOrderReleasePreconditions(order: Order, isAdmin = false, isInvo
 }
 
 // Release Escrow Payment (Buyer approves work)
-app.post('/api/payments/escrow/release', requireAuth, (req, res) => {
+app.post('/api/payments/escrow/release', requireAuth, requireActiveStatus, (req, res) => {
   const { orderId } = req.body;
   if (!orderId) return res.status(400).json({ error: 'Order ID is required' });
   if (!tryAcquireOrderLock(orderId, res)) return;
@@ -4435,10 +4562,10 @@ app.patch('/api/admin/payouts/:id/process', requireAdmin, processPayout);
 app.patch('/api/admin/payouts/:id/fail', requireAdmin, failPayout);
 
 // Freelancer withdrawal request: uses isolated payout user authorization and ledger requestPayout
-app.post('/api/payouts', requireAuth, rateLimit(10, 60_000), handlePayoutRequest);
+app.post('/api/payouts', requireAuth, requireActiveStatus, rateLimit(10, 60_000), handlePayoutRequest);
 
 // Wallet top-up (Simulated - Strictly Development Only)
-app.post('/api/wallet/deposit', requireAuth, rateLimit(10, 60_000), (req, res) => {
+app.post('/api/wallet/deposit', requireAuth, requireActiveStatus, rateLimit(10, 60_000), (req, res) => {
   try {
     // Simulated deposits are strictly development/test functionality; reject in production unconditionally
     if (!areSimulatedDepositsAllowed()) {
@@ -5126,22 +5253,59 @@ app.post('/api/support-tickets', requireAuth, (req, res) => {
   const caller = users.find(u => u.id === authUserId);
   if (!caller) return res.status(401).json({ error: 'User not found' });
 
-  const { subject, text, priority = 'medium' } = req.body;
+  const { subject, text, priority = 'medium', isAppeal: clientIsAppeal, category } = req.body;
   const userId = caller.id;
   const userName = caller.name;
+
+  // Derive account status and appeal context authoritatively from server-side user state
+  const isSuspendedOrRestricted = caller.status === 'suspended' || caller.status === 'restricted';
+  const isAppeal = isSuspendedOrRestricted && (
+    clientIsAppeal === true ||
+    category === 'appeal' ||
+    String(subject || '').toLowerCase().includes('appeal') ||
+    caller.status === 'suspended'
+  );
+
+  // Prevent duplicate active appeals for the same current restriction
+  if (isAppeal) {
+    const hasActiveAppeal = supportTickets.some(t =>
+      t.userId === caller.id &&
+      (t.status === 'open' || t.status === 'in_progress') &&
+      (t.isAppeal === true || t.category === 'appeal' || String(t.subject || '').toLowerCase().includes('appeal'))
+    );
+
+    if (hasActiveAppeal) {
+      return res.status(409).json({
+        error: 'An active appeal is already currently open for your account. Please wait for our support team to review your case before submitting another appeal.'
+      });
+    }
+  }
+
+  const appealContext = isAppeal ? {
+    accountStatus: caller.status,
+    flagReason: caller.flagReason || 'Policy Violation',
+    appealedAt: new Date().toISOString()
+  } : undefined;
 
   const newTicket: SupportTicket = {
     id: 'tick_' + Date.now(),
     userId,
     userName,
-    subject: subject || 'General Support Query',
-    priority,
+    subject: subject || (isAppeal ? `Account Appeal (${caller.status})` : 'General Support Query'),
+    priority: isAppeal ? 'high' : priority,
     status: 'open',
     createdAt: new Date().toISOString().split('T')[0],
     messages: [
-      { sender: userName, text: text || 'I need support assistance regarding my account.', timestamp: new Date().toISOString() }
-    ]
+      {
+        sender: userName,
+        text: text || 'I need support assistance regarding my account.',
+        timestamp: new Date().toISOString(),
+        ...(appealContext ? { appealContext } : {})
+      }
+    ],
+    ...(isAppeal ? { isAppeal: true, category: 'appeal', appealContext } : {})
   };
+
   supportTickets.unshift(newTicket);
   postgresStore.saveSupportTickets(supportTickets).catch(err => console.error('[PostgresStore] Failed to save tickets:', err));
 
@@ -5149,9 +5313,11 @@ app.post('/api/support-tickets', requireAuth, (req, res) => {
     id: 'log_' + Date.now(),
     actor: userName,
     role: caller.role,
-    action: 'SUPPORT_TICKET_OPENED',
+    action: isAppeal ? 'ACCOUNT_APPEAL_SUBMITTED' : 'SUPPORT_TICKET_OPENED',
     target: `Ticket #${newTicket.id}`,
-    details: `User submitted support request: ${subject}`,
+    details: isAppeal
+      ? `User submitted account appeal for ${caller.status} status (Flag reason: ${caller.flagReason || 'None'}): ${subject}`
+      : `User submitted support request: ${subject}`,
     timestamp: new Date().toLocaleString()
   });
 
@@ -7911,8 +8077,18 @@ export async function createNotification({
     dedupKey: dedupKey || undefined
   };
 
+  try {
+    const saveResult = await postgresStore.saveNotification(newNotif);
+    if (saveResult && saveResult.duplicate) {
+      // Duplicate dedupKey was already processed by another concurrent request; return success/no-op
+      return;
+    }
+  } catch (err) {
+    console.error('[PostgresStore] Database error saving notification:', err);
+    throw err;
+  }
+
   notifications.unshift(newNotif);
-  await postgresStore.saveNotification(newNotif).catch(err => console.error('[PostgresStore] Failed to save notification:', err));
   broadcastNotificationToUser(userId, newNotif);
 }
 
