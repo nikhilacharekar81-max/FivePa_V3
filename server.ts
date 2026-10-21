@@ -94,6 +94,12 @@ if (!fs.existsSync(DATA_DIR)) {
 const app = express();
 app.set('trust proxy', 1);
 app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  if (IS_PRODUCTION) res.setHeader('Strict-Transport-Security', 'max-age=15552000');
+  next();
+});
+app.use((req, res, next) => {
   if (req.path === '/api/payments/webhook' && req.method === 'POST') {
     return next();
   }
@@ -416,7 +422,7 @@ app.post('/api/auth/signup', rateLimit(20, 3_600_000), async (req, res) => {
       }
     }
 
-    const hashedPassword = bcrypt.hashSync(password, 10);
+    const hashedPassword = await bcrypt.hash(password, 10);
     const newUserId = 'user_' + Date.now() + '_' + randomBytes(3).toString('hex');
     const isFirstUser = users.length === 0;
     const newUser: User = {
@@ -478,7 +484,7 @@ app.post('/api/auth/signup', rateLimit(20, 3_600_000), async (req, res) => {
     }
 
     recordUserEmail({
-      id: 'email_' + Date.now(),
+      id: 'email_' + Date.now() + '_' + randomUUID().slice(0, 8),
       userId: newUserId,
       userEmail: normalizedEmail,
       subject: 'Verify Your WorkPerHour Account',
@@ -554,7 +560,7 @@ app.post('/api/auth/resend-email-code', (req, res) => {
   deliverSecurityCode(normalizedEmail, 'EMAIL_VERIFICATION', newCode);
 
   recordUserEmail({
-    id: 'email_' + Date.now(),
+    id: 'email_' + Date.now() + '_' + randomUUID().slice(0, 8),
     userId: user?.id || 'guest',
     userEmail: normalizedEmail,
     subject: 'Your New WorkPerHour Verification Code',
@@ -753,7 +759,7 @@ async function handleLogin(req: Request, res: Response) {
   }
 
   // A password is ALWAYS required: no hardcoded passwords and no passwordless accounts.
-  const passwordMatch = typeof user.password === 'string' && user.password.length > 0 && bcrypt.compareSync(password, user.password);
+  const passwordMatch = typeof user.password === 'string' && user.password.length > 0 && (await bcrypt.compare(password, user.password));
   if (!passwordMatch) {
     recordFailedLogin();
     return res.status(401).json({ error: 'Invalid email or password.' });
@@ -958,7 +964,7 @@ app.post('/api/auth/forgot-password/verify', (req, res) => {
   res.json({ success: true, message: 'Code verified successfully.' });
 });
 
-app.post('/api/auth/forgot-password/reset', (req, res) => {
+app.post('/api/auth/forgot-password/reset', async (req, res) => {
   const { emailOrMobile, code, newPassword, confirmPassword, confirmNewPassword } = req.body || {};
   if (typeof emailOrMobile !== 'string' || !emailOrMobile.trim() || !code || typeof newPassword !== 'string' || !newPassword) {
     return res.status(400).json({ error: 'All fields are required.' });
@@ -983,7 +989,7 @@ app.post('/api/auth/forgot-password/reset', (req, res) => {
   const user = users.find(u => (u.email && u.email.toLowerCase() === query) || u.mobile === query);
   if (!user) return res.status(404).json({ error: 'User not found.' });
 
-  user.password = bcrypt.hashSync(newPassword, 10);
+  user.password = await bcrypt.hash(newPassword, 10);
   user.sessionVersion = (user.sessionVersion || 1) + 1;
   saveUsersToPostgres();
   disconnectUserSockets(user.id, 'Password reset');
@@ -1288,7 +1294,7 @@ function notifyUserOnAdminAction(user: User, action: 'suspended' | 'restricted' 
 // Known demo passwords exist ONLY outside production. In production every seeded account gets an
 // unguessable random password; the super admin uses ADMIN_INITIAL_PASSWORD (or a one-time generated
 // password printed to the server log on first boot).
-const randomPasswordHash = () => bcrypt.hashSync(randomBytes(24).toString('hex'), 10);
+const randomPasswordHash = async () => await bcrypt.hash(randomBytes(24).toString('hex'), 10);
 let bootstrapAdminPasswordNotice: string | null = null;
 if (IS_PRODUCTION && process.env.ADMIN_INITIAL_PASSWORD && process.env.ADMIN_INITIAL_PASSWORD.length < 12) {
   console.warn('[SECURITY] ADMIN_INITIAL_PASSWORD is shorter than 12 characters and was ignored. A random one-time password will be generated instead.');
@@ -2305,8 +2311,20 @@ app.get('/api/projects/:id', (req, res) => {
 
 app.get('/api/projects/:id/clarifications', (req, res) => {
   const projectId = req.params.id;
-  const projectClarificationsList = projectClarifications.filter(c => c.projectId === projectId);
-  res.json(projectClarificationsList);
+  const project = projects.find(p => p.id === projectId);
+  if (!project) return res.json([]);
+
+  const callerId = (req as any).authenticatedUserId;
+  const callerUser = (req as any).authenticatedUser;
+  const isBuyer = callerId && project.buyerId === callerId;
+  const isStaff = callerUser && isStaffUser(callerUser);
+  const hasProposal = callerId && proposals.some(pr => pr.projectId === projectId && pr.freelancerId === callerId);
+
+  if (isProjectPublic(project) || isBuyer || isStaff || hasProposal) {
+    const projectClarificationsList = projectClarifications.filter(c => c.projectId === projectId);
+    return res.json(projectClarificationsList);
+  }
+  return res.json([]);
 });
 
 app.post('/api/projects/:id/clarifications', requireAuth, requireActiveStatus, rateLimit(20, 60_000), async (req, res) => {
@@ -2861,7 +2879,7 @@ app.post('/api/orders/:id/revision', requireAuth, requireActiveStatus, async (re
   const reason = escapeHtml(rawReason);
   if (!order.revisions) order.revisions = [];
   const revisionEntry = {
-    id: 'rev_' + Date.now(),
+    id: 'rev_' + Date.now() + '_' + randomUUID().slice(0, 8),
     requestedAt: new Date().toISOString(),
     reason,
     status: 'requested',
@@ -2917,7 +2935,7 @@ app.post('/api/orders/:id/dispute', requireAuth, requireActiveStatus, (req, res)
     }
 
     const newDispute: Dispute = {
-      id: 'disp_' + Date.now(),
+      id: 'disp_' + Date.now() + '_' + randomUUID().slice(0, 8),
       orderId: order.id,
       raisedBy: authUserId === order.buyerId ? 'buyer' : 'seller',
       reason,
@@ -4145,7 +4163,7 @@ app.post('/api/payments/invoices', requireAuth, (req, res) => {
     const total = subtotal;
 
     const newInvoice: CustomInvoice = {
-      id: 'inv_' + Date.now(),
+      id: 'inv_' + Date.now() + '_' + randomUUID().slice(0, 8),
       invoiceNumber: `INV-${Date.now().toString().slice(-6)}`,
       userId: authenticatedUserId, // Set from auth, not request body
       recipientName,
@@ -4206,7 +4224,7 @@ app.post('/api/payments/methods', requireAuth, (req, res) => {
       });
     }
     const newMethod: PaymentMethodRecord = {
-      id: 'pm_' + Date.now(),
+      id: 'pm_' + Date.now() + '_' + randomUUID().slice(0, 8),
       userId,
       type,
       name,
@@ -4740,7 +4758,7 @@ app.post('/api/admin/categories', requireAdmin, (req, res) => {
   if (!name) return res.status(400).json({ error: 'Category name is required' });
   const catSlug = slug || name.toLowerCase().trim().replace(/[^\w\s-]/g, '').replace(/[\s_-]+/g, '-').replace(/^-+|-+$/g, '');
   const newCat: Category = {
-    id: 'cat_' + Date.now(),
+    id: 'cat_' + Date.now() + '_' + randomUUID().slice(0, 8),
     name,
     slug: catSlug,
     enabled: true,
@@ -4854,7 +4872,7 @@ app.post('/api/admin/categories/:id/subcategories', requireAdmin, (req, res) => 
   if (!name) return res.status(400).json({ error: 'Subcategory name is required' });
   const subSlug = slug || name.toLowerCase().trim().replace(/[^\w\s-]/g, '').replace(/[\s_-]+/g, '-').replace(/^-+|-+$/g, '');
   const newSub = {
-    id: 'sub_' + Date.now(),
+    id: 'sub_' + Date.now() + '_' + randomUUID().slice(0, 8),
     name,
     slug: subSlug,
     enabled: true
@@ -5280,6 +5298,8 @@ app.get('/api/user-emails/:userId', requireAuth, (req, res) => {
 app.patch('/api/user-emails/:id/read', requireAuth, (req, res) => {
   const em = userEmails.find(e => e.id === req.params.id);
   if (!em) return res.status(404).json({ error: 'Notification not found' });
+  const callerId = (req as any).authenticatedUserId;
+  if (em.userId !== callerId && !isStaffUser((req as any).authenticatedUser)) return res.status(404).json({ error: 'Notification not found' });
   em.read = true;
   postgresStore.saveUserEmails(userEmails).catch(err => console.error('[PostgresStore] Failed to save user emails:', err));
   res.json({ success: true });
@@ -5326,7 +5346,7 @@ app.post('/api/support-tickets', requireAuth, (req, res) => {
   } : undefined;
 
   const newTicket: SupportTicket = {
-    id: 'tick_' + Date.now(),
+    id: 'tick_' + Date.now() + '_' + randomUUID().slice(0, 8),
     userId,
     userName,
     subject: subject || (isAppeal ? `Account Appeal (${caller.status})` : 'General Support Query'),
@@ -6028,11 +6048,26 @@ app.post('/api/gigs', requireAuth, requireActiveStatus, async (req, res) => {
     return res.status(400).json({ error: `Gig price ($${gigPrice}) cannot exceed the platform maximum of $${maxGigPrice}.` });
   }
 
+  const deliveryDays = Math.min(365, Math.max(1, Math.round(Number(req.body.deliveryDays)) || 7));
+  const category = typeof req.body.category === 'string' ? req.body.category.trim().slice(0, 100) || 'Development & IT' : 'Development & IT';
+  const subcategory = typeof req.body.subcategory === 'string' ? req.body.subcategory.trim().slice(0, 100) || 'General' : 'General';
+  const rawImage = req.body.image;
+  const defaultImage = 'https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=800&h=500&fit=crop';
+  const image = (typeof rawImage === 'string' && !/^\s*(javascript:|vbscript:|data:(?!image\/))/i.test(rawImage)) ? rawImage : defaultImage;
+  let extras: { id: string; title: string; price: number }[] = [];
+  if (Array.isArray(req.body.extras)) {
+    extras = req.body.extras.slice(0, 20).map((ex: any, idx: number) => ({
+      id: String(ex?.id || `extra_${Date.now()}_${idx}`),
+      title: String(ex?.title || '').slice(0, 200),
+      price: Math.round(Math.min(100000, Math.max(0, Number(ex?.price) || 0)) * 100) / 100
+    }));
+  }
+
   // Determine publication status based on Admin Gig Moderation setting
   const initialStatus = activeSettings.marketplace.gigModerationRequired ? 'pending' : 'published';
 
   const newGig: Gig = {
-    id: 'gig_' + Date.now(),
+    id: 'gig_' + Date.now() + '_' + randomUUID().slice(0, 8),
     freelancerId: caller.id,
     freelancerName: caller.name,
     freelancerUsername: caller.username || caller.name.toLowerCase().replace(/\s+/g, '_'),
@@ -6040,17 +6075,17 @@ app.post('/api/gigs', requireAuth, requireActiveStatus, async (req, res) => {
     freelancerLevel: 'Level 1 ★',
     title: escapeHtml(req.body.title || 'Untitled Gig'),
     slug: req.body.title ? req.body.title.toLowerCase().trim().replace(/[^\w\s-]/g, '').replace(/[\s_-]+/g, '-').replace(/^-+|-+$/g, '') : 'custom-gig',
-    category: req.body.category || 'Development & IT',
-    subcategory: req.body.subcategory || 'General',
+    category,
+    subcategory,
     description: escapeHtml(req.body.description || ''),
     price: gigPrice,
-    deliveryDays: Number(req.body.deliveryDays),
+    deliveryDays,
     rating: 0,
     reviewsCount: 0,
-    image: req.body.image || 'https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=800&h=500&fit=crop',
+    image,
     status: initialStatus,
     featured: false,
-    extras: req.body.extras || []
+    extras
   };
   gigs.unshift(newGig);
   try {
@@ -6079,7 +6114,7 @@ app.post('/api/projects', requireAuth, requireActiveStatus, async (req, res) => 
   }
 
   const newProj: Project = {
-    id: 'proj_' + Date.now(),
+    id: 'proj_' + Date.now() + '_' + randomUUID().slice(0, 8),
     buyerId: caller.id,
     buyerName: caller.name,
     buyerAvatar: caller.avatar,
@@ -6371,10 +6406,10 @@ app.patch('/api/gigs/:id', requireAuth, requireActiveStatus, (req, res) => {
     return res.status(403).json({ error: 'Forbidden: You can only edit your own gigs.' });
   }
 
-  if (req.body.title !== undefined) g.title = req.body.title;
-  if (req.body.category !== undefined) g.category = req.body.category;
-  if (req.body.subcategory !== undefined) g.subcategory = req.body.subcategory;
-  if (req.body.description !== undefined) g.description = req.body.description;
+  if (req.body.title !== undefined) g.title = escapeHtml(req.body.title);
+  if (req.body.category !== undefined && typeof req.body.category === 'string') g.category = req.body.category.trim().slice(0, 100);
+  if (req.body.subcategory !== undefined && typeof req.body.subcategory === 'string') g.subcategory = req.body.subcategory.trim().slice(0, 100);
+  if (req.body.description !== undefined) g.description = escapeHtml(req.body.description);
   if (req.body.price !== undefined) {
     const newPrice = Number(req.body.price);
     if (!Number.isFinite(newPrice)) return res.status(400).json({ error: 'Gig price must be a valid number.' });
@@ -6389,9 +6424,20 @@ app.patch('/api/gigs/:id', requireAuth, requireActiveStatus, (req, res) => {
     }
     g.price = newPrice;
   }
-  if (req.body.deliveryDays !== undefined) g.deliveryDays = Number(req.body.deliveryDays);
-  if (req.body.extras !== undefined && Array.isArray(req.body.extras)) g.extras = req.body.extras;
-  if (req.body.image !== undefined && typeof req.body.image === 'string') g.image = req.body.image;
+  if (req.body.deliveryDays !== undefined) {
+    g.deliveryDays = Math.min(365, Math.max(1, Math.round(Number(req.body.deliveryDays)) || 7));
+  }
+  if (req.body.extras !== undefined && Array.isArray(req.body.extras)) {
+    g.extras = req.body.extras.slice(0, 20).map((ex: any, idx: number) => ({
+      id: String(ex?.id || `extra_${Date.now()}_${idx}`),
+      title: String(ex?.title || '').slice(0, 200),
+      price: Math.round(Math.min(100000, Math.max(0, Number(ex?.price) || 0)) * 100) / 100
+    }));
+  }
+  if (req.body.image !== undefined && typeof req.body.image === 'string') {
+    const defaultImage = 'https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=800&h=500&fit=crop';
+    g.image = /^\s*(javascript:|vbscript:|data:(?!image\/))/i.test(req.body.image) ? defaultImage : req.body.image;
+  }
 
   // CRITICAL SECURITY FIX: Sellers CANNOT modify moderationStatus, moderationNotes, featured, or featuredUntil
   // These fields are strictly ignored and reserved for admin moderation or the paid /feature endpoint

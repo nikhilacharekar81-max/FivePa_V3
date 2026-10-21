@@ -100,17 +100,6 @@ function randomPasswordHash(): string {
   return bcrypt.hashSync(plain, 10);
 }
 
-function seedPasswordHashFor(role: string): string {
-  if (role === 'super_admin') {
-    const configured = process.env.ADMIN_INITIAL_PASSWORD;
-    if (configured && configured.length >= 12) return bcrypt.hashSync(configured, 10);
-    const generated = randomBytes(18).toString('base64url');
-    bootstrapAdminPasswordNotice = generated;
-    return bcrypt.hashSync(generated, 10);
-  }
-  return bcrypt.hashSync('password123', 10);
-}
-
 // In-Memory Data Collections (capable of starting clean with zero records)
 export let users: User[] = [];
 export let gigs: Gig[] = [];

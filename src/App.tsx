@@ -3322,7 +3322,7 @@ export default function App({ initialPath, initialData }: { initialPath?: string
                     </div>
                     <div>
                       <label className="block text-xs font-bold text-fiverr-dark uppercase mb-1">Password</label>
-                      <input type="password" placeholder="Password (default: password123)" value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} required className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-slate-900" />
+                      <input type="password" placeholder="Password" value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} required className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-slate-900" />
                     </div>
                     <button 
                       type="submit" 
