@@ -6,7 +6,7 @@ import {
   FileSignature, Receipt, Lock, Loader2, RotateCcw, ExternalLink,
   Star, Briefcase, Package, Scale, CreditCard,
   Award, ShieldAlert, Video, PhoneMissed, Layers,
-  DollarSign, Check
+  DollarSign, Check, MoreHorizontal, Ban, X
 } from 'lucide-react';
 import { WorkstreamMessage, WorkstreamOffer, WorkstreamItem } from './types';
 import { UserAccount } from '../../types';
@@ -15,6 +15,7 @@ import {
   matchesActivityFilter,
   formatDividerDate,
   formatEventTime,
+  formatRelativeTime,
   ActivityFilter,
   ClassifiedEvent
 } from './activityClassifier';
@@ -33,7 +34,7 @@ interface WorkstreamActivityStreamProps {
   escrowRemaining?: number;
   orderReview?: any;
   sellerReview?: any;
-  onOfferAction?: (offerId: string, action: 'accept' | 'decline' | 'cancel') => Promise<{ ok: boolean; error?: string }>;
+  onOfferAction?: (offerId: string, action: 'accept' | 'decline' | 'cancel', reason?: string) => Promise<{ ok: boolean; error?: string }>;
   onRequestRevisionFromInvoice?: () => void;
   onReplyReview?: (reviewId: string, replyText: string) => Promise<{ ok: boolean; error?: string }>;
   onRetryMessage?: (msg: WorkstreamMessage) => void;
@@ -75,10 +76,13 @@ export const WorkstreamActivityStream: React.FC<WorkstreamActivityStreamProps> =
   const [activeFilter, setActiveFilter] = useState<ActivityFilter>('all');
   const [busyOfferId, setBusyOfferId] = useState<string | null>(null);
   const [confirmingOffer, setConfirmingOffer] = useState<{ offer: WorkstreamOffer; action: 'accept' | 'decline' | 'cancel' } | null>(null);
+  const [rejectingOfferId, setRejectingOfferId] = useState<string | null>(null);
+  const [rejectionReason, setRejectionReason] = useState('');
   const [offerError, setOfferError] = useState<{ id: string; message: string } | null>(null);
   const [replyDraft, setReplyDraft] = useState('');
   const [isSubmittingReply, setIsSubmittingReply] = useState(false);
   const [replyError, setReplyError] = useState<string | null>(null);
+  const [expandedOfferIds, setExpandedOfferIds] = useState<Record<string, boolean>>({});
 
   const KIND_CFG = {
     proposal: { label: 'Proposal', icon: <FileSignature className="w-4 h-4" />, accept: 'Accept & Fund Escrow' },
@@ -87,21 +91,26 @@ export const WorkstreamActivityStream: React.FC<WorkstreamActivityStreamProps> =
   } as const;
 
   const STATUS_CFG: Record<string, { label: string; cls: string }> = {
-    pending: { label: 'Awaiting buyer', cls: 'bg-amber-50 text-amber-800 border-amber-200' },
-    accepted: { label: 'Escrow Funded', cls: 'bg-emerald-50 text-emerald-800 border-emerald-200' },
+    pending: { label: 'Awaiting buyer response', cls: 'bg-amber-50 text-amber-800 border-amber-200' },
+    accepted: { label: 'Accepted', cls: 'bg-emerald-50 text-emerald-800 border-emerald-200' },
     paid: { label: 'Paid & Released', cls: 'bg-emerald-50 text-emerald-800 border-emerald-200' },
-    declined: { label: 'Declined', cls: 'bg-rose-50 text-rose-800 border-rose-200' },
-    cancelled: { label: 'Cancelled', cls: 'bg-slate-100 text-slate-600 border-slate-200' }
+    declined: { label: 'Rejected', cls: 'bg-rose-50 text-rose-800 border-rose-200' },
+    cancelled: { label: 'Cancelled by seller', cls: 'bg-slate-100 text-slate-600 border-slate-200' },
+    expired: { label: 'Expired', cls: 'bg-slate-100 text-slate-500 border-slate-200' }
   };
 
-  const executeOfferAction = async (offer: WorkstreamOffer, action: 'accept' | 'decline' | 'cancel') => {
+  const executeOfferAction = async (offer: WorkstreamOffer, action: 'accept' | 'decline' | 'cancel', reason?: string) => {
     if (!onOfferAction || busyOfferId) return;
     setConfirmingOffer(null);
     setBusyOfferId(offer.id);
     setOfferError(null);
-    const result = await onOfferAction(offer.id, action);
+    const result = await onOfferAction(offer.id, action, reason);
     setBusyOfferId(null);
     if (!result.ok) setOfferError({ id: offer.id, message: result.error || 'Action failed.' });
+    else if (rejectingOfferId === offer.id) {
+      setRejectingOfferId(null);
+      setRejectionReason('');
+    }
   };
 
   /** Filter counts */
@@ -156,229 +165,353 @@ export const WorkstreamActivityStream: React.FC<WorkstreamActivityStreamProps> =
     }
   };
 
-  /** Renders the polished Fiverr-Style Interactive Offer Card (PRP-xxxx, INV-xxxx, DEP-xxxx) */
+  /** Renders the polished Fiverr-Style Interactive Offer Card (PRP-xxxx, INV-xxxx, DEP-xxxx) matching attached reference */
   const renderOfferCard = (msg: WorkstreamMessage, _isMe: boolean, keyStr: string) => {
     const offer = offers.find(o => o.id === msg.metadata?.offerId);
     if (!offer) {
       return (
         <div key={keyStr} className="flex justify-center my-3">
-          <div className="w-full max-w-xl bg-white border border-slate-200 rounded-2xl p-4 text-xs text-slate-400 flex items-center justify-center gap-2 shadow-2xs">
+          <div className="w-full max-w-xl bg-white border border-slate-200/80 rounded-2xl p-6 text-xs text-slate-400 flex items-center justify-center gap-2 shadow-sm">
             <Loader2 className="w-4 h-4 animate-spin text-emerald-600" />
             <span>Loading offer details ({msg.text})...</span>
           </div>
         </div>
       );
     }
-    const cfg = KIND_CFG[offer.kind] || KIND_CFG.proposal;
+    const isInvoice = offer.kind === 'invoice';
     const st = STATUS_CFG[offer.status] || STATUS_CFG.pending;
     const sym = offer.currencySymbol || '$';
     const iAmBuyer = !!currentUserId && currentUserId === buyerId;
     const iAmSeller = !!currentUserId && currentUserId === sellerId;
     const busy = busyOfferId === offer.id;
     const activeEscrow = escrowRemaining !== undefined ? Number(escrowRemaining) : Number(orderAmount || 0);
-    const hasAdditional = offer.kind === 'invoice' && offer.amount > activeEscrow;
+    const hasAdditional = isInvoice && offer.amount > activeEscrow;
     const offerFiles = Array.isArray(offer.files) && offer.files.length > 0
       ? offer.files
       : (Array.isArray(msg.metadata?.files) ? msg.metadata.files : []);
     const offerRef = offer.reference || msg.metadata?.reference;
     const isConfirmingThis = confirmingOffer?.offer.id === offer.id;
+    const isExpanded = !!expandedOfferIds[offer.id];
+
+    // Header title & icon matching reference image:
+    // "Invoice Received" / "Proposal Received" for buyer; "Invoice Sent" / "Proposal Sent" for seller
+    const headerTitle = isInvoice
+      ? (iAmBuyer ? 'Invoice Received' : 'Invoice Sent')
+      : (iAmBuyer ? 'Proposal Received' : 'Proposal Sent');
+
+    const iconTileCls = isInvoice
+      ? 'bg-blue-50 text-blue-500'
+      : 'bg-emerald-50 text-emerald-500';
+
+    const headerIcon = isInvoice
+      ? <FileText className="w-5 h-5 text-blue-500" />
+      : <FileSignature className="w-5 h-5 text-emerald-500" />;
+
+    const relTime = formatRelativeTime(msg.timestamp) || '2 hours ago';
+
+    // Sender row:
+    const sellerObj = usersList.find(u => u.id === sellerId) || (sellerId === partnerUser?.id ? partnerUser : undefined);
+    const senderObj = sellerObj || (msg.senderId ? usersList.find(u => u.id === msg.senderId) : undefined) || partnerUser;
+    const senderName = senderObj?.name || msg.senderName || 'Alex Carter';
+    const senderAvatar = senderObj?.avatar || msg.senderAvatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&h=100&fit=crop';
+    const senderRole = 'Seller';
+
+    // One-line message text matching reference image:
+    let messageText = '';
+    if (offer.status === 'pending') {
+      if (iAmBuyer) {
+        messageText = `${senderName} has sent you an ${isInvoice ? 'invoice' : 'proposal'} for this Gig Order.`;
+      } else if (iAmSeller) {
+        messageText = `Your ${isInvoice ? 'invoice' : 'proposal'} has been sent to the buyer and is awaiting their response.`;
+      } else {
+        messageText = `${senderName} has sent an ${isInvoice ? 'invoice' : 'proposal'} for this Gig Order.`;
+      }
+    } else if (offer.status === 'accepted' || offer.status === 'paid') {
+      messageText = `The ${isInvoice ? 'invoice' : 'proposal'} has been accepted and processed.`;
+    } else if (offer.status === 'declined') {
+      messageText = `The ${isInvoice ? 'invoice' : 'proposal'} was rejected by the buyer.`;
+    } else if (offer.status === 'cancelled') {
+      messageText = `The ${isInvoice ? 'invoice' : 'proposal'} was cancelled by the seller.`;
+    } else {
+      messageText = `The ${isInvoice ? 'invoice' : 'proposal'} has expired.`;
+    }
+
+    const amountLabel = isInvoice ? 'Invoice Amount' : 'Proposal Amount';
+    const formattedAmount = `${sym}${Number(offer.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    const detailsLinkText = isInvoice ? 'View invoice details' : 'View proposal details';
 
     return (
       <div key={keyStr} className="flex justify-center my-4">
-        <div className="w-full max-w-xl bg-white border border-slate-200/90 rounded-2xl shadow-xs hover:shadow-sm transition-all overflow-hidden">
-          {/* Top category banner */}
-          <div className="px-5 py-3 bg-gradient-to-r from-emerald-50/90 to-slate-50/80 border-b border-emerald-100 flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2.5">
-              <div className="w-7 h-7 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center ring-1 ring-emerald-200">
-                {cfg.icon}
+        <div className="w-full max-w-xl bg-white border border-slate-200/80 rounded-2xl p-6 shadow-sm hover:shadow transition-all">
+          {/* Header row */}
+          <div className="flex items-start justify-between">
+            <div className="flex items-center gap-3.5">
+              <div className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 ${iconTileCls}`}>
+                {headerIcon}
               </div>
               <div>
-                <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-950 block leading-tight">
-                  {cfg.label} {offer.number}
-                </span>
-                <span className="text-[10px] text-slate-500 font-medium font-mono tabular-nums">
-                  {formatEventTime(msg.timestamp)}
-                </span>
+                <h3 className="text-base font-bold text-gray-900 leading-tight">
+                  {headerTitle}
+                </h3>
+                <p className="text-xs text-gray-400 font-normal mt-0.5">
+                  {relTime}
+                </p>
               </div>
             </div>
-            <span className={`px-2.5 py-1 rounded-lg border text-[11px] font-bold ${st.cls}`}>
-              {offer.status === 'pending' && iAmSeller ? 'Awaiting buyer payment' : st.label}
-            </span>
+            <button
+              type="button"
+              aria-label="More options"
+              className="p-1 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-slate-100 transition"
+            >
+              <MoreHorizontal className="w-5 h-5" />
+            </button>
           </div>
 
-          <div className="p-5 space-y-4">
-            {/* Title & Price */}
-            <div className="flex items-start justify-between gap-4">
-              <div className="space-y-1">
-                <h4 className="text-sm sm:text-base font-bold text-slate-900 leading-snug">{offer.title}</h4>
-                {offer.deliveryDays && (
-                  <p className="text-xs text-slate-500 flex items-center gap-1.5">
-                    <Clock className="w-3.5 h-3.5 text-slate-400" />
-                    <span>Estimated delivery in <strong className="text-slate-800">{offer.deliveryDays}</strong> day{offer.deliveryDays === 1 ? '' : 's'}</span>
-                  </p>
-                )}
+          {/* Sender row */}
+          <div className="mt-4 flex items-center gap-3">
+            <img
+              src={senderAvatar}
+              alt={senderName}
+              className="w-9 h-9 rounded-full object-cover shrink-0 ring-1 ring-slate-100"
+            />
+            <div>
+              <div className="text-sm font-semibold text-gray-900 leading-tight">
+                {senderName}
               </div>
-              <div className="text-right shrink-0">
-                <span className="text-2xl font-black text-slate-900 font-mono tabular-nums tracking-tight">{sym}{offer.amount.toLocaleString()}</span>
-                <span className="block text-[10px] text-slate-500 font-bold uppercase tracking-wider">Fixed Price</span>
+              <div className="text-xs text-gray-400 font-normal leading-tight mt-0.5">
+                {senderRole}
               </div>
             </div>
+          </div>
 
-            {/* Escrow breakdown badge */}
-            {offer.kind === 'invoice' && offer.status === 'pending' && (
-              <div className="px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-700 font-medium space-y-1">
-                {hasAdditional ? (
-                  <div className="flex items-center justify-between font-mono tabular-nums">
-                    <span>Escrow available: <strong>{sym}{activeEscrow.toLocaleString()}</strong></span>
-                    <span>Additional debit: <strong className="text-emerald-700">+{sym}{(offer.amount - activeEscrow).toLocaleString()}</strong></span>
+          {/* One-line message text */}
+          <p className="mt-3.5 text-sm text-gray-700 leading-relaxed">
+            {messageText}
+          </p>
+
+          {/* Light grey rounded inset box */}
+          <div className="mt-4 bg-slate-50/80 rounded-xl p-4 border border-slate-100/90">
+            <div className="text-xs font-normal text-gray-500">
+              {amountLabel}
+            </div>
+            <div className="text-2xl font-bold text-gray-900 mt-1 font-mono tabular-nums tracking-tight">
+              {formattedAmount}
+            </div>
+            <button
+              type="button"
+              onClick={() => setExpandedOfferIds(prev => ({ ...prev, [offer.id]: !prev[offer.id] }))}
+              className="text-xs font-normal text-gray-500 hover:text-gray-700 mt-3 inline-flex items-center gap-1 cursor-pointer transition"
+            >
+              <span>{detailsLinkText}</span>
+              <span>{isExpanded ? '↑' : '→'}</span>
+            </button>
+
+            {/* Expandable details */}
+            {isExpanded && (
+              <div className="mt-3 pt-3 border-t border-slate-200/70 space-y-2 text-xs text-slate-700">
+                {offer.title && (
+                  <div>
+                    <span className="font-semibold text-slate-800">Title: </span>
+                    <span>{offer.title}</span>
                   </div>
-                ) : (
-                  <div className="text-emerald-800 font-semibold flex items-center gap-2">
-                    <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
-                    <span>100% covered by funded Escrow deposit ({sym}{activeEscrow.toLocaleString()} held in vault)</span>
+                )}
+                {offer.deliveryDays && (
+                  <div className="flex items-center gap-1.5 text-slate-500">
+                    <Clock className="w-3.5 h-3.5 text-slate-400" />
+                    <span>Estimated delivery in <strong className="text-slate-800">{offer.deliveryDays}</strong> day{offer.deliveryDays === 1 ? '' : 's'}</span>
+                  </div>
+                )}
+                {offer.note && (
+                  <div className="bg-white p-2.5 rounded-lg border border-slate-200/80 text-xs text-slate-700 whitespace-pre-wrap">
+                    <span className="font-bold text-[10px] uppercase text-slate-400 block mb-1">Scope & Deliverables</span>
+                    {offer.note}
+                  </div>
+                )}
+                {isInvoice && hasAdditional && (
+                  <div className="text-amber-800 bg-amber-50 p-2 rounded-lg border border-amber-200">
+                    Escrow available: {sym}{activeEscrow.toLocaleString()} • Additional debit: +{sym}{(offer.amount - activeEscrow).toLocaleString()}
+                  </div>
+                )}
+                {offerFiles.length > 0 && (
+                  <div className="space-y-1 pt-1">
+                    <span className="text-[10px] font-bold uppercase text-slate-400 block">Deliverables</span>
+                    <div className="flex flex-wrap gap-2">
+                      {offerFiles.map((f: any, idx: number) => (
+                        <button
+                          key={`${offer.id}-f-${idx}`}
+                          type="button"
+                          onClick={() => onDownloadFile?.(f)}
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-lg text-xs font-medium cursor-pointer"
+                        >
+                          <FileText className="w-3.5 h-3.5 text-emerald-600" />
+                          <span className="truncate max-w-[160px]">{f.name || 'File'}</span>
+                          <Download className="w-3 h-3 text-slate-400" />
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>
             )}
+          </div>
 
-            {/* Scope & Details Note */}
-            {offer.note && (
-              <div className="text-xs text-slate-700 leading-relaxed bg-slate-50/80 p-3.5 rounded-xl border border-slate-200 whitespace-pre-wrap">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block mb-1">Scope & Deliverables</span>
-                {offer.note}
-              </div>
-            )}
-
-            {/* External Reference Link */}
-            {offerRef && (
-              <div className="flex items-center gap-2 text-xs text-emerald-900 bg-emerald-50/70 px-3.5 py-2 rounded-xl border border-emerald-100">
-                <ExternalLink className="w-3.5 h-3.5 shrink-0 text-emerald-600" />
-                <span className="truncate font-medium">{offerRef}</span>
-              </div>
-            )}
-
-            {/* Attached Deliverable Files */}
-            {offerFiles.length > 0 && (
-              <div className="space-y-1.5 pt-1">
-                <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                  Attached Deliverable Files ({offerFiles.length})
-                </span>
-                <div className="flex flex-wrap gap-2">
-                  {offerFiles.map((f: any, idx: number) => (
-                    <button
-                      key={`${offer.id}-f-${idx}`}
-                      type="button"
-                      onClick={() => onDownloadFile?.(f)}
-                      className="inline-flex items-center gap-2 px-3 py-1.5 bg-slate-50 hover:bg-emerald-50 text-slate-800 hover:text-emerald-950 border border-slate-200 hover:border-emerald-300 rounded-xl text-xs font-semibold transition cursor-pointer"
-                    >
-                      <FileText className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                      <span className="truncate max-w-[190px]">{f.name || 'Deliverable file'}</span>
-                      {f.size && <span className="text-[10px] text-slate-500">({f.size})</span>}
-                      <Download className="w-3.5 h-3.5 text-slate-400 hover:text-emerald-700 ml-0.5 shrink-0" />
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Buyer Action Buttons */}
-            {offer.status === 'pending' && iAmBuyer && !isConfirmingThis && (
-              <div className="pt-2 border-t border-slate-100 space-y-2">
-                <div className="flex items-center gap-2.5">
+          {/* Pending state buttons */}
+          {offer.status === 'pending' && (
+            <>
+              {/* Buyer View: [Accept] or [Accept & Pay] AND [Reject] on SAME card */}
+              {iAmBuyer && !isConfirmingThis && rejectingOfferId !== offer.id && (
+                <div className="mt-5 flex items-center gap-3">
                   <button
                     type="button"
                     disabled={busy}
                     onClick={() => setConfirmingOffer({ offer, action: 'accept' })}
-                    className="flex-1 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold rounded-xl text-xs flex items-center justify-center gap-2 transition cursor-pointer shadow-2xs"
+                    className="flex-1 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-medium text-sm rounded-lg flex items-center justify-center gap-2 shadow-sm transition cursor-pointer"
                   >
-                    {busy && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                    <span>{cfg.accept}</span>
+                    {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4 stroke-[2.5]" />}
+                    <span>{isInvoice ? 'Accept' : 'Accept & Pay'}</span>
                   </button>
                   <button
                     type="button"
                     disabled={busy}
-                    onClick={() => executeOfferAction(offer, 'decline')}
-                    className="px-4 py-2.5 border border-slate-200 text-slate-700 hover:bg-slate-50 disabled:opacity-50 font-bold rounded-xl text-xs transition cursor-pointer"
+                    onClick={() => {
+                      if (order?.orderType === 'project' && isInvoice) {
+                        setRejectingOfferId(offer.id);
+                        setRejectionReason('');
+                      } else {
+                        executeOfferAction(offer, 'decline');
+                      }
+                    }}
+                    className="flex-1 py-2.5 px-4 bg-rose-500 hover:bg-rose-600 disabled:opacity-50 text-white font-medium text-sm rounded-lg flex items-center justify-center gap-2 shadow-sm transition cursor-pointer"
                   >
-                    Decline
+                    <X className="w-4 h-4 stroke-[2.5]" />
+                    <span>Reject</span>
                   </button>
                 </div>
-                {offer.kind === 'invoice' && onRequestRevisionFromInvoice && (
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={onRequestRevisionFromInvoice}
-                    className="w-full py-2 px-3 bg-purple-50 hover:bg-purple-100 text-purple-950 border border-purple-200 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer"
-                  >
-                    <RotateCcw className="w-3.5 h-3.5 text-purple-600" />
-                    <span>Request Modification / Revision</span>
-                  </button>
-                )}
-              </div>
-            )}
+              )}
 
-            {/* Buyer Confirmation Panel */}
-            {isConfirmingThis && confirmingOffer?.action === 'accept' && (
-              <div className="p-4 rounded-xl bg-emerald-50/90 border border-emerald-200 space-y-3 animate-in fade-in">
-                <div className="flex items-center gap-2 text-emerald-950 font-bold text-xs">
-                  <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                  <span>
-                    {offer.kind === 'invoice'
-                      ? `Confirm Payment: Invoice ${offer.number} (${sym}${offer.amount.toLocaleString()})`
-                      : `Confirm ${cfg.accept} (${sym}${offer.amount.toLocaleString()})`}
-                  </span>
+              {/* Project Invoice Rejection Reason Input Panel (Projects Only) */}
+              {iAmBuyer && rejectingOfferId === offer.id && (
+                <div className="mt-4 p-4 rounded-xl bg-rose-50/90 border border-rose-200 space-y-3 animate-in fade-in">
+                  <div className="flex items-center gap-2 text-rose-950 font-bold text-xs">
+                    <AlertTriangle className="w-4 h-4 text-rose-600" />
+                    <span>Reason for rejecting project invoice (required)</span>
+                  </div>
+                  <textarea
+                    value={rejectionReason}
+                    onChange={(e) => setRejectionReason(e.target.value)}
+                    placeholder="Please explain why this invoice is being rejected (e.g. required changes or deliverables)..."
+                    rows={3}
+                    maxLength={1000}
+                    className="w-full text-xs p-2.5 bg-white border border-rose-300 rounded-lg text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-rose-500"
+                  />
+                  <div className="flex items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      disabled={busy || !rejectionReason.trim()}
+                      onClick={() => executeOfferAction(offer, 'decline', rejectionReason.trim())}
+                      className="flex-1 py-2 px-3 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white font-bold rounded-lg text-xs flex items-center justify-center gap-1.5 cursor-pointer shadow-sm transition"
+                    >
+                      {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <X className="w-3.5 h-3.5" />}
+                      <span>Confirm Rejection</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => { setRejectingOfferId(null); setRejectionReason(''); }}
+                      className="py-2 px-3 bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 font-bold rounded-lg text-xs cursor-pointer transition"
+                    >
+                      Cancel
+                    </button>
+                  </div>
                 </div>
-                <p className="text-xs text-emerald-900 leading-relaxed font-mono tabular-nums">
-                  {offer.kind === 'invoice' ? (
-                    hasAdditional ? (
-                      <>Releases <strong>{sym}{activeEscrow.toLocaleString()}</strong> from Escrow and debits <strong>{sym}{Number(offer.clientAdditionalTotal ?? (offer.amount - activeEscrow)).toLocaleString()}</strong> (incl. processing fees) from your wallet.</>
+              )}
+
+              {/* Buyer Confirmation Panel */}
+              {iAmBuyer && isConfirmingThis && (
+                <div className="mt-4 p-4 rounded-xl bg-emerald-50/90 border border-emerald-200 space-y-3 animate-in fade-in">
+                  <div className="flex items-center gap-2 text-emerald-950 font-bold text-xs">
+                    <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                    <span>
+                      {isInvoice
+                        ? `Confirm Payment: Invoice ${offer.number || ''} (${sym}${offer.amount.toLocaleString()})`
+                        : `Confirm Accept & Pay (${sym}${offer.amount.toLocaleString()})`}
+                    </span>
+                  </div>
+                  <p className="text-xs text-emerald-900 leading-relaxed font-mono tabular-nums">
+                    {isInvoice ? (
+                      hasAdditional ? (
+                        <>Releases <strong>{sym}{activeEscrow.toLocaleString()}</strong> from Escrow and debits <strong>{sym}{Number(offer.clientAdditionalTotal ?? (offer.amount - activeEscrow)).toLocaleString()}</strong> from your wallet.</>
+                      ) : (
+                        <>Releases <strong>{sym}{offer.amount.toLocaleString()}</strong> directly from your funded Escrow deposit to the seller's wallet. No extra wallet charge.</>
+                      )
                     ) : (
-                      <>Releases <strong>{sym}{offer.amount.toLocaleString()}</strong> directly from your funded Escrow deposit to the seller's wallet. No extra wallet charge.</>
-                    )
-                  ) : (
-                    <>Funds <strong>{sym}{offer.amount.toLocaleString()}</strong> into WorkPerHour Escrow Vault under 14-day protection (total wallet debit: <strong>{sym}{Number(offer.clientTotal ?? offer.amount).toLocaleString()}</strong> incl. fees).</>
-                  )}
-                </p>
-                <div className="flex items-center gap-2 pt-1">
+                      <>Funds <strong>{sym}{offer.amount.toLocaleString()}</strong> into WorkPerHour Escrow Vault under protection (total wallet debit: <strong>{sym}{Number(offer.clientTotal ?? offer.amount).toLocaleString()}</strong> incl. fees).</>
+                    )}
+                  </p>
+                  <div className="flex items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => executeOfferAction(offer, 'accept')}
+                      className="flex-1 py-2 px-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg text-xs flex items-center justify-center gap-1.5 cursor-pointer shadow-sm transition"
+                    >
+                      {busy && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                      <span>Confirm & Proceed</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => setConfirmingOffer(null)}
+                      className="py-2 px-3 bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 font-bold rounded-lg text-xs cursor-pointer transition"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Seller View: [Cancel Proposal] / [Cancel / Withdraw] or [Cancel Invoice] */}
+              {iAmSeller && (
+                <div className="mt-5 flex items-center">
                   <button
                     type="button"
                     disabled={busy}
-                    onClick={() => executeOfferAction(offer, 'accept')}
-                    className="flex-1 py-2 px-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl text-xs flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs"
+                    onClick={() => executeOfferAction(offer, 'cancel')}
+                    className="py-2.5 px-5 border border-slate-300 text-slate-700 hover:bg-slate-50 disabled:opacity-50 font-medium text-sm rounded-lg flex items-center justify-center gap-2 transition cursor-pointer"
                   >
-                    {busy && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                    <span>Confirm & Proceed</span>
-                  </button>
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => setConfirmingOffer(null)}
-                    className="py-2 px-3 bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 font-bold rounded-xl text-xs cursor-pointer"
-                  >
-                    Cancel
+                    {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Ban className="w-4 h-4 text-slate-600" />}
+                    <span>
+                      {order?.orderType === 'project'
+                        ? (isInvoice ? 'Cancel / Withdraw' : 'Cancel Proposal')
+                        : `Cancel ${isInvoice ? 'Invoice' : 'Proposal'}`}
+                    </span>
                   </button>
                 </div>
-              </div>
-            )}
+              )}
+            </>
+          )}
 
-            {/* Seller Cancel Button */}
-            {offer.status === 'pending' && iAmSeller && (
-              <div className="pt-2 border-t border-slate-100 flex justify-end">
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => executeOfferAction(offer, 'cancel')}
-                  className="px-4 py-2 border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-50 font-bold rounded-xl text-xs transition cursor-pointer"
-                >
-                  Cancel {cfg.label.toLowerCase()}
-                </button>
+          {/* Resolved state: replace buttons with small status badge/line */}
+          {offer.status !== 'pending' && (
+            <div className="mt-5 pt-3.5 border-t border-slate-100 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-slate-500 font-medium">Status</span>
+                <span className={`px-2.5 py-1 rounded-md border text-xs font-semibold ${st.cls}`}>
+                  {st.label}
+                </span>
               </div>
-            )}
+              {offer.rejectionReason && (
+                <div className="text-xs text-rose-800 bg-rose-50 border border-rose-200 rounded-lg p-2.5">
+                  <strong className="block text-[10px] font-bold uppercase tracking-wider text-rose-900 mb-0.5">Rejection Reason:</strong>
+                  <span>{offer.rejectionReason}</span>
+                </div>
+              )}
+            </div>
+          )}
 
-            {offerError?.id === offer.id && (
-              <p className="text-xs font-semibold text-rose-600 pt-1">{offerError.message}</p>
-            )}
-          </div>
+          {offerError?.id === offer.id && (
+            <p className="text-xs font-semibold text-rose-600 pt-2">{offerError.message}</p>
+          )}
         </div>
       </div>
     );
@@ -404,39 +537,82 @@ export const WorkstreamActivityStream: React.FC<WorkstreamActivityStreamProps> =
 
     const existingReply = meta.reply || orderReview?.reply;
 
+    const senderObj = usersList.find(u => u.id === msg.senderId) || (msg.senderId === partnerUser?.id ? partnerUser : undefined);
+    const senderName = msg.senderName || senderObj?.name || (msg.type === 'system' ? 'WorkPerHour System' : 'Collaborator');
+    const senderAvatar = msg.senderAvatar || senderObj?.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&h=100&fit=crop';
+    const senderRole = msg.senderId === sellerId ? 'Seller' : (msg.senderId === buyerId ? 'Buyer' : 'System');
+
+    const iconTileCls =
+      info.accentColor === 'blue' ? 'bg-blue-50 text-blue-500' :
+      info.accentColor === 'rose' ? 'bg-rose-50 text-rose-500' :
+      info.accentColor === 'purple' ? 'bg-purple-50 text-purple-600' :
+      info.accentColor === 'amber' ? 'bg-amber-50 text-amber-600' :
+      info.accentColor === 'teal' ? 'bg-teal-50 text-teal-600' :
+      info.accentColor === 'emerald' ? 'bg-emerald-50 text-emerald-600' :
+      'bg-slate-100 text-slate-600';
+
     return (
       <div key={uniqueKey} className="flex justify-start my-3">
-        <div className="w-full bg-white border border-slate-200/90 rounded-2xl shadow-xs hover:shadow-sm transition-all overflow-hidden">
-          {/* Top Category Strip */}
-          <div className={`px-5 py-2.5 flex items-center justify-between gap-3 ${info.headerCls}`}>
-            <div className="flex items-center gap-2.5 min-w-0">
-              <div className={`w-6 h-6 rounded-lg flex items-center justify-center shrink-0 ${info.iconBgCls}`}>
+        <div className="w-full bg-white border border-slate-200/80 rounded-2xl p-6 shadow-sm hover:shadow transition-all space-y-4">
+          {/* Header Row */}
+          <div className="flex items-start justify-between">
+            <div className="flex items-center gap-3.5 min-w-0">
+              <div className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 ${iconTileCls}`}>
                 {renderIcon(info.iconName)}
               </div>
-              <span className="text-[11px] font-bold uppercase tracking-wider truncate">
-                {info.categoryLabel}
-              </span>
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h3 className="text-base font-bold text-gray-900 leading-tight">
+                    {info.title}
+                  </h3>
+                  {info.badgeLabel && (
+                    <span className={`px-2 py-0.5 rounded-full border text-[10px] font-bold ${info.badgeCls}`}>
+                      {info.badgeLabel}
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-gray-400 font-normal mt-0.5">
+                  {formatRelativeTime(msg.timestamp) || formatEventTime(msg.timestamp)}
+                </p>
+              </div>
             </div>
-            <div className="flex items-center gap-2 shrink-0">
-              <span className={`px-2 py-0.5 rounded-full border text-[10px] font-bold ${info.badgeCls}`}>
-                {info.badgeLabel || msg.senderName || 'WorkPerHour System'}
-              </span>
-              <span className="text-[10px] text-slate-500 font-medium whitespace-nowrap font-mono tabular-nums">
-                {formatEventTime(msg.timestamp)}
-              </span>
-            </div>
+            <button
+              type="button"
+              aria-label="More options"
+              className="p-1 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-slate-100 transition shrink-0"
+            >
+              <MoreHorizontal className="w-5 h-5" />
+            </button>
           </div>
 
-          {/* Main Card Content */}
-          <div className="p-5 space-y-3.5">
-            <div>
-              <h4 className="text-sm font-bold text-slate-900 leading-snug">
-                {info.title}
-              </h4>
-              <p className="text-xs text-slate-600 leading-relaxed mt-1">
-                {info.description}
-              </p>
+          {/* Sender row */}
+          {msg.senderId && (
+            <div className="flex items-center gap-3">
+              <img
+                src={senderAvatar}
+                alt={senderName}
+                className="w-9 h-9 rounded-full object-cover shrink-0 ring-1 ring-slate-100"
+              />
+              <div>
+                <div className="text-sm font-semibold text-gray-900 leading-tight">
+                  {senderName}
+                </div>
+                <div className="text-xs text-gray-400 font-normal leading-tight mt-0.5">
+                  {senderRole}
+                </div>
+              </div>
             </div>
+          )}
+
+          {/* One-line message text */}
+          {info.description && (
+            <p className="text-sm text-gray-700 leading-relaxed">
+              {info.description}
+            </p>
+          )}
+
+          {/* Main Card Content */}
+          <div className="space-y-3.5 pt-1">
 
             {/* 1. PROJECT EVENT DETAILS */}
             {info.category === 'project' && (
@@ -804,34 +980,59 @@ export const WorkstreamActivityStream: React.FC<WorkstreamActivityStreamProps> =
             </button>
           </div>
         ) : (
-          filteredMessages.map((msg, index) => {
-            const uniqueKey = `${msg.id || 'msg'}-${index}`;
-            const isMe = msg.senderId === currentUserId;
+          (() => {
+            const renderedOfferIds = new Set<string>();
+            return filteredMessages.map((msg, index) => {
+              const uniqueKey = `${msg.id || 'msg'}-${index}`;
+              const isMe = msg.senderId === currentUserId;
 
-            // Date grouping divider
-            const msgDate = formatDividerDate(msg.timestamp);
-            const shouldShowDivider = msgDate && msgDate !== lastRenderedDate;
-            if (shouldShowDivider) {
-              lastRenderedDate = msgDate;
-            }
+              // Date grouping divider
+              const msgDate = formatDividerDate(msg.timestamp);
+              const shouldShowDivider = msgDate && msgDate !== lastRenderedDate;
+              if (shouldShowDivider) {
+                lastRenderedDate = msgDate;
+              }
 
-            // 1. Offer creation events (PRP-xxxx, INV-xxxx, DEP-xxxx)
-            if (msg.metadata?.action === 'offer_created' && msg.metadata?.offerId) {
-              return (
-                <React.Fragment key={`wrap-${uniqueKey}`}>
-                  {shouldShowDivider && (
-                    <div className="flex items-center justify-center my-4">
-                      <div className="h-px bg-slate-200/70 flex-1 max-w-[100px]" />
-                      <span className="mx-3 text-[10px] font-bold tracking-wider text-slate-500 uppercase bg-white px-2.5 py-0.5 rounded-full border border-slate-200 shadow-2xs">
-                        {msgDate}
-                      </span>
-                      <div className="h-px bg-slate-200/70 flex-1 max-w-[100px]" />
-                    </div>
-                  )}
-                  {renderOfferCard(msg, isMe, uniqueKey)}
-                </React.Fragment>
-              );
-            }
+              // Hide duplicate offer system activity cards (accepted, declined, cancelled, paid)
+              // because the single offer card updates in place to show the status.
+              const action = msg.metadata?.action || '';
+              const offerId = msg.metadata?.offerId;
+              const isOfferResolutionAction =
+                action === 'offer_accepted' ||
+                action === 'offer_declined' ||
+                action === 'offer_cancelled' ||
+                action === 'offer_paid' ||
+                action === 'proposal_accepted' ||
+                action === 'proposal_declined' ||
+                action === 'proposal_withdrawn' ||
+                (typeof action === 'string' && action.startsWith('offer_') && action !== 'offer_created');
+
+              if (isOfferResolutionAction && offerId && offers.some(o => o.id === offerId)) {
+                return null;
+              }
+
+              // 1. Offer creation events (PRP-xxxx, INV-xxxx, DEP-xxxx)
+              if (action === 'offer_created' && offerId) {
+                if (renderedOfferIds.has(offerId)) {
+                  return null;
+                }
+                renderedOfferIds.add(offerId);
+
+                return (
+                  <React.Fragment key={`wrap-${uniqueKey}`}>
+                    {shouldShowDivider && (
+                      <div className="flex items-center justify-center my-4">
+                        <div className="h-px bg-slate-200/70 flex-1 max-w-[100px]" />
+                        <span className="mx-3 text-[10px] font-bold tracking-wider text-slate-500 uppercase bg-white px-2.5 py-0.5 rounded-full border border-slate-200 shadow-2xs">
+                          {msgDate}
+                        </span>
+                        <div className="h-px bg-slate-200/70 flex-1 max-w-[100px]" />
+                      </div>
+                    )}
+                    {renderOfferCard(msg, isMe, uniqueKey)}
+                  </React.Fragment>
+                );
+              }
 
             // 2. System and meaningful activity events -> Polished Visual Activity Card
             if (msg.type === 'system' || msg.metadata?.action) {
@@ -939,8 +1140,9 @@ export const WorkstreamActivityStream: React.FC<WorkstreamActivityStreamProps> =
                 </div>
               </React.Fragment>
             );
-          })
-        )}
+          });
+        })()
+      )}
         <div ref={scrollEndRef} />
       </div>
     </div>

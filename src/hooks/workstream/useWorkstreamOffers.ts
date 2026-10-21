@@ -84,8 +84,8 @@ export function useWorkstreamOffers(orderId: string | undefined, refreshKey?: st
 
   const createOffer = (input: CreateOfferInput) =>
     request(`/api/orders/${orderId}/offers`, { ...input, deliverWork: input.kind === 'invoice' ? true : input.deliverWork });
-  const respond = (offerId: string, action: 'accept' | 'decline' | 'cancel') =>
-    request(`/api/offers/${offerId}/${action}`);
+  const respond = (offerId: string, action: 'accept' | 'decline' | 'cancel', reason?: string) =>
+    request(`/api/offers/${offerId}/${action}`, reason ? { reason } : undefined);
   const refundEscrow = (reason: string) =>
     request('/api/payments/escrow/refund', { orderId, reason });
 

@@ -1539,7 +1539,7 @@ function enrichOrderWithServiceInfo(o: Order, isAdmin: boolean = false) {
     ? [...orderMessages].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0] 
     : undefined;
 
-  const reviewWindowDays = getReviewWindowDays();
+  const reviewWindowDays = o.orderType === 'project' ? 7 : getReviewWindowDays();
   const reviewWindowEnabled = isAutoAcceptEnabled();
   let reviewWindowExpiresAt: string | undefined;
   if (o.status === 'delivered' && Array.isArray(o.deliveryHistory) && o.deliveryHistory.length > 0) {
@@ -2128,7 +2128,9 @@ app.get('/api/gigs', (req, res) => {
 });
 
 app.get('/api/projects', (req, res) => {
-  const publicProjects = projects.filter(isProjectPublic).map(sanitizePublicProject);
+  const publicProjects = projects
+    .filter(p => isProjectPublic(p) && (p.status === 'open' || p.status === 'published'))
+    .map(sanitizePublicProject);
   res.json(publicProjects);
 });
 
@@ -2384,13 +2386,22 @@ app.post('/api/orders/:id/deliverable', requireAuth, async (req, res) => {
     order.deliveryReference = storedReference;
 
     const version = order.deliveryHistory.length + 1;
+    const deliveredAt = new Date().toISOString();
+    const projectResponseDeadline = order.orderType === 'project'
+      ? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+      : undefined;
+
     order.deliveryHistory.push({
       version,
       notes: sanitizedNotes,
       reference: storedReference || undefined,
       files: uploadedFiles,
-      deliveredAt: new Date().toISOString()
+      deliveredAt,
+      ...(projectResponseDeadline ? { responseDeadline: projectResponseDeadline } : {})
     });
+    if (projectResponseDeadline) {
+      order.responseDeadline = projectResponseDeadline;
+    }
 
     let resolvedRevisionCount = 0;
     if (order.revisions && order.revisions.length > 0) {
@@ -5138,12 +5149,13 @@ export function processAutoAcceptOrders(customNow?: number): Array<{
     return [];
   }
 
-  const days = getReviewWindowDays();
-  const windowMs = days * 24 * 60 * 60 * 1000;
   const now = typeof customNow === 'number' ? customNow : Date.now();
   const processed: Array<{ orderId: string; acceptedVersion: number; amount: number; freelancerNet: number }> = [];
 
   for (const order of orders) {
+    const days = order.orderType === 'project' ? 7 : getReviewWindowDays();
+    const windowMs = days * 24 * 60 * 60 * 1000;
+
     // 1. Must be currently in 'delivered' status
     if (order.status !== 'delivered') continue;
 
@@ -5156,7 +5168,24 @@ export function processAutoAcceptOrders(customNow?: number): Array<{
     const deliveredAt = new Date(latestDelivery.deliveredAt).getTime();
     if (isNaN(deliveredAt)) continue;
 
-    // 3. Stays in 'delivered' for REVIEW_WINDOW_DAYS
+    // Check ~24h approaching notice for Project orders in delivered status
+    if (order.orderType === 'project' && !order.deadlineApproachingNotified) {
+      const remainingTime = (deliveredAt + windowMs) - now;
+      if (remainingTime > 0 && remainingTime <= 24 * 60 * 60 * 1000) {
+        order.deadlineApproachingNotified = true;
+        postgresStore.saveOrders(orders).catch(err => console.error(err));
+        createNotification({
+          userId: order.buyerId,
+          type: 'deadline_approaching',
+          title: 'Review Window Closing Soon',
+          message: `You have less than 24 hours to review deliverable for project "${order.title}". It will be automatically approved thereafter.`,
+          link: `/workstream/${order.id}`,
+          dedupKey: `proj_deliv_warn_${order.id}_v${latestDelivery.version}`
+        });
+      }
+    }
+
+    // 3. Stays in 'delivered' for REVIEW_WINDOW_DAYS (7 for projects, getReviewWindowDays() for gigs)
     if (now - deliveredAt < windowMs) continue;
 
     // 4. Must have no active requested revision
@@ -5204,13 +5233,13 @@ export function processAutoAcceptOrders(customNow?: number): Array<{
       order.acceptedVersion = latestDelivery.version;
       postgresStore.saveOrders(orders);
 
-      // Post system message into workstream
+      // Post system message into workstream (no internal IDs in text)
       const sysMsg: Message = {
         id: 'msg_' + now + '_' + Math.random().toString(36).slice(2, 6),
         orderId: order.id,
         senderId: 'system',
-        senderName: 'WorkSphere Review Desk',
-        text: `🎉 Order #${order.id} automatically accepted: Buyer review window (${days} days) closed without revisions or dispute. Escrow funds released to seller.`,
+        senderName: 'WorkPerHour System',
+        text: `🎉 Deliverables automatically accepted: Buyer review window (${days} days) closed without revisions or dispute. Escrow funds released to seller.`,
         timestamp: new Date(now).toISOString(),
         type: 'system',
         metadata: {
@@ -5222,6 +5251,24 @@ export function processAutoAcceptOrders(customNow?: number): Array<{
       recordMessage(sysMsg);
       postgresStore.saveMessages(messages);
       broadcastMessage(sysMsg, order.id);
+
+      createNotification({
+        userId: order.buyerId,
+        type: 'order_auto_processed',
+        title: 'Project Automatically Completed',
+        message: `Project "${order.title}" was automatically completed after the ${days}-day review window.`,
+        link: `/workstream/${order.id}`,
+        dedupKey: `auto_accept_buyer_${order.id}_v${latestDelivery.version}`
+      });
+
+      createNotification({
+        userId: order.sellerId,
+        type: 'order_auto_processed',
+        title: 'Project Auto-Completed & Escrow Released',
+        message: `Project "${order.title}" was automatically approved and escrow funds released.`,
+        link: `/workstream/${order.id}`,
+        dedupKey: `auto_accept_seller_${order.id}_v${latestDelivery.version}`
+      });
 
       // Log to the audit log
       registerAuditLog({
@@ -5244,6 +5291,130 @@ export function processAutoAcceptOrders(customNow?: number): Array<{
       console.error(`[ReviewWindow] Failed to auto-accept order ${order.id}:`, err);
     } finally {
       releaseOrderLock(order.id);
+    }
+  }
+
+  // Extend the SAME processAutoAcceptOrders job for pending Project invoices past responseDeadline
+  for (const offer of workstreamOffers) {
+    if (offer.kind !== 'invoice' || offer.status !== 'pending') continue;
+    const order = orders.find(o => o.id === offer.orderId);
+    if (!order || order.orderType !== 'project') continue;
+    if ((order.status as string) === 'disputed' || order.isTimerPaused) continue;
+
+    const deadlineMs = offer.responseDeadline
+      ? new Date(offer.responseDeadline).getTime()
+      : (offer.createdAt ? new Date(offer.createdAt).getTime() + 7 * 24 * 60 * 60 * 1000 : NaN);
+
+    if (isNaN(deadlineMs)) continue;
+    const timeLeftMs = deadlineMs - now;
+
+    // Send ~24h approaching notice (once only)
+    if (timeLeftMs > 0 && timeLeftMs <= 24 * 60 * 60 * 1000 && !offer.deadlineApproachingNotified) {
+      offer.deadlineApproachingNotified = true;
+      postgresStore.saveOffers(workstreamOffers).catch(err => console.error(err));
+      createNotification({
+        userId: order.buyerId,
+        type: 'deadline_approaching',
+        title: 'Invoice Response Window Closing Soon',
+        message: `You have less than 24 hours to review invoice ${offer.number} for project "${order.title}". It will be automatically approved thereafter.`,
+        link: `/workstream/${order.id}`,
+        dedupKey: `deadline_warn_${offer.id}`
+      });
+    }
+
+    if (now >= deadlineMs) {
+      const esc = financeLedger.getEscrow(order.id);
+      if (!esc || esc.remaining <= 0 || esc.status === 'released' || esc.status === 'refunded') {
+        continue;
+      }
+      if (orderStateLocks.has(order.id)) {
+        continue;
+      }
+
+      try {
+        acquireOrderLock(order.id);
+      } catch {
+        continue;
+      }
+
+      const requestKey = `auto_process_invoice_${offer.id}`;
+      try {
+        if (offer.status !== 'pending') {
+          releaseOrderLock(order.id);
+          continue;
+        }
+
+        console.log(`[ReviewWindow] Auto-processing project invoice ${offer.number} on order ${order.id} after 7-day window elapsed.`);
+        const result = releaseOrderFunds(order, 'System Auto-Accept', `Auto-processed project invoice ${offer.number} after 7-day buyer review window`, false, requestKey);
+
+        offer.status = 'paid';
+        offer.resolvedAt = new Date(now).toISOString();
+        offer.resolvedBy = 'system';
+        offer.autoProcessedAt = new Date(now).toISOString();
+        postgresStore.saveOffers(workstreamOffers);
+
+        order.status = 'completed';
+        if (!order.completedAt) order.completedAt = new Date(now).toISOString();
+        postgresStore.saveOrders(orders);
+
+        const sysMsg: Message = {
+          id: 'msg_' + now + '_' + Math.random().toString(36).slice(2, 6),
+          orderId: order.id,
+          senderId: 'system',
+          senderName: 'WorkPerHour System',
+          text: `🎉 Invoice ${offer.number} automatically approved: 7-day buyer review window closed. Escrow funds ($${order.amount.toLocaleString()}) released to seller.`,
+          timestamp: new Date(now).toISOString(),
+          type: 'system',
+          metadata: {
+            action: 'offer_paid',
+            offerId: offer.id,
+            autoProcessed: true,
+            reviewWindowDays: 7
+          }
+        };
+        recordMessage(sysMsg);
+        postgresStore.saveMessages(messages);
+        broadcastMessage(sysMsg, order.id);
+
+        createNotification({
+          userId: order.buyerId,
+          type: 'invoice_auto_processed',
+          title: 'Invoice Auto-Processed',
+          message: `Invoice ${offer.number} for project "${order.title}" was automatically approved after the 7-day review window.`,
+          link: `/workstream/${order.id}`,
+          dedupKey: `auto_proc_buyer_${offer.id}`
+        });
+
+        createNotification({
+          userId: order.sellerId,
+          type: 'invoice_auto_processed',
+          title: 'Invoice Auto-Processed & Paid',
+          message: `Invoice ${offer.number} for project "${order.title}" was automatically approved and escrow funds released.`,
+          link: `/workstream/${order.id}`,
+          dedupKey: `auto_proc_seller_${offer.id}`
+        });
+
+        registerAuditLog({
+          id: 'log_' + now + '_' + Math.random().toString(36).slice(2, 6),
+          actor: 'System Auto-Accept',
+          role: 'super_admin',
+          action: 'PROJECT_INVOICE_AUTO_PROCESSED',
+          target: `Order #${order.id}`,
+          details: `Project invoice ${offer.number} auto-processed after 7-day review window. Escrow of $${order.amount} released (net payout $${result.freelancerNet}).`,
+          timestamp: new Date(now).toLocaleString()
+        });
+
+        processed.push({
+          orderId: order.id,
+          acceptedVersion: order.acceptedVersion || 1,
+          amount: order.amount,
+          freelancerNet: result.freelancerNet
+        });
+      } catch (err: any) {
+        console.error(`[ReviewWindow] Failed to auto-process project invoice ${offer.id}:`, err);
+      } finally {
+        releaseOrderLock(order.id);
+      }
     }
   }
 
@@ -5999,6 +6170,9 @@ async function processProposalAccept(req: any, res: any) {
     const caller = (req as any).authenticatedUser || users.find((u: any) => u.id === authUserId);
     if (!caller || caller.status !== 'active') return res.status(403).json({ error: 'Authentication required' });
     if (proj.buyerId !== caller.id) return res.status(403).json({ error: 'Forbidden: Only the project buyer can accept proposals.' });
+    if (proj.status !== 'open' && proj.status !== 'published') {
+      return res.status(409).json({ error: `Project is no longer open for proposal acceptance (status: ${proj.status}).` });
+    }
     if (proposal.status !== 'pending') {
       if (proposal.status === 'accepted' && proposal.workstreamOrderId) {
         const existingOrder = orders.find(o => o.id === proposal.workstreamOrderId);
@@ -6136,6 +6310,9 @@ async function processProposalAccept(req: any, res: any) {
     proposal.workstreamOrderId = order.id;
     proposal.offerId = offer.id;
     await postgresStore.saveProposals(proposals);
+
+    proj.status = 'in_progress';
+    await postgresStore.saveProjects(projects);
     
     syncUserBalances();
 
@@ -6145,6 +6322,15 @@ async function processProposalAccept(req: any, res: any) {
     await postgresStore.saveOffers(workstreamOffers);
     
     postOfferMessage(order, offer, null, `Proposal ${offer.number} was accepted and escrow funded ($${order.amount}).`, 'offer_accepted');
+
+    createNotification({
+      userId: proposal.freelancerId,
+      type: 'proposal_accepted',
+      title: 'Proposal accepted',
+      message: `Your proposal for "${proj.title}" was accepted and escrow has been funded.`,
+      link: `/workstream/${order.id}`,
+      metadata: { orderId: order.id, projectId: proj.id, proposalId: proposal.id }
+    });
 
     res.json({ success: true, proposal: enrichProposalWithWorkstream(proposal), order: enrichOrderWithServiceInfo(order), workspace, offer: viewOffer(offer) });
   } finally {
@@ -6169,6 +6355,15 @@ async function processProposalDecline(req: any, res: any) {
 
     proposal.status = 'rejected';
     await postgresStore.saveProposals(proposals);
+
+    createNotification({
+      userId: proposal.freelancerId,
+      type: 'proposal_declined',
+      title: 'Proposal declined',
+      message: `Your proposal for "${proj.title}" was declined.`,
+      link: `/projects/${proj.id}`,
+      metadata: { projectId: proj.id, proposalId: proposal.id }
+    });
 
     // If an offer existed, mark it as declined
     const offer = workstreamOffers.find(of => of.proposalId === proposal.id || of.id === proposal.offerId);
@@ -6574,6 +6769,10 @@ app.post('/api/orders/:id/offers', requireAuth, rateLimit(20, 60_000), (req, res
       }));
     }
 
+    const responseDeadline = (order.orderType === 'project' && kind === 'invoice')
+      ? new Date(Date.now() + 7 * 86400000).toISOString()
+      : undefined;
+
     const offer: WorkstreamOffer = {
       id: 'off_' + randomUUID().slice(0, 12),
       number: `${OFFER_PREFIX[kind]}-${String(workstreamOffers.filter(o => o.kind === kind).length + 1001)}`,
@@ -6585,12 +6784,33 @@ app.post('/api/orders/:id/offers', requireAuth, rateLimit(20, 60_000), (req, res
       note: note || undefined,
       files: uploadedFiles.length > 0 ? uploadedFiles : undefined,
       reference: rawRef || undefined,
+      responseDeadline,
       status: 'pending',
       createdBy: caller.id,
       createdAt: new Date().toISOString()
     };
     workstreamOffers.push(offer);
     postgresStore.saveOffers(workstreamOffers);
+
+    if (order.orderType === 'project' && kind === 'invoice') {
+      createNotification({
+        userId: order.buyerId,
+        type: 'invoice_received',
+        title: 'Invoice received',
+        message: `You received an invoice of $${offer.amount} for "${order.title}". Please review within 7 days.`,
+        link: `/workstream/${order.id}`,
+        metadata: { orderId: order.id, offerId: offer.id }
+      });
+    } else if (order.orderType === 'project' && kind === 'proposal') {
+      createNotification({
+        userId: order.buyerId,
+        type: 'proposal_received',
+        title: 'Proposal received',
+        message: `You received a proposal of $${offer.amount} for "${order.title}".`,
+        link: `/workstream/${order.id}`,
+        metadata: { orderId: order.id, offerId: offer.id }
+      });
+    }
 
     // When a seller raises an invoice with deliverables/notes/deliverWork from the WorkStream UI, record the delivery and mark as delivered
     if (kind === 'invoice' && (req.body?.deliverWork || note || uploadedFiles.length > 0 || rawRef)) {
@@ -6669,13 +6889,26 @@ app.post('/api/offers/:id/:action(accept|decline|cancel)', requireAuth, rateLimi
       }
       await postgresStore.saveOffers(workstreamOffers);
       postOfferMessage(order, offer, null, `${offer.number} was cancelled by the seller.`, 'offer_cancelled');
+      if (order.orderType === 'project') {
+        createNotification({
+          userId: order.buyerId,
+          type: offer.kind === 'invoice' ? 'invoice_cancelled' : 'proposal_cancelled',
+          title: `${OFFER_LABEL[offer.kind]} cancelled`,
+          message: `The ${offer.kind} for "${order.title}" was cancelled by the seller.`,
+          link: `/workstream/${order.id}`,
+          metadata: { orderId: order.id, offerId: offer.id }
+        });
+      }
       return res.json({ offer: viewOffer(offer), order: enrichOrderWithServiceInfo(order) });
     }
 
     // Accepting / declining belongs to the buyer only (not staff, not the seller).
     if (caller.id !== order.buyerId) return res.status(403).json({ error: 'Only the buyer can respond to this.' });
 
-    if (order.status === 'cancelled' && order.orderType !== 'gig' && !order.gigOrderId) {
+    if (order.orderType === 'project' && (order.status === 'completed' || order.status === 'cancelled') && offer.kind !== 'proposal') {
+      return res.status(400).json({ error: `Cannot accept ${offer.kind} on a ${order.status} project order.` });
+    }
+    if (order.status === 'cancelled' && order.orderType !== 'gig' && !order.gigOrderId && offer.kind !== 'proposal') {
       return res.status(400).json({ error: 'Cannot accept offers on a cancelled order (escrow has already been refunded).' });
     }
     if (order.status === 'completed' && offer.kind === 'invoice') {
@@ -6683,6 +6916,26 @@ app.post('/api/offers/:id/:action(accept|decline|cancel)', requireAuth, rateLimi
     }
 
     if (action === 'decline') {
+      if (order.orderType === 'project' && offer.kind === 'invoice') {
+        const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim().slice(0, 1000) : '';
+        if (!reason) {
+          return res.status(400).json({ error: 'A reason is required when rejecting a project invoice.' });
+        }
+        offer.rejectionReason = reason;
+        offer.rejectedBy = caller.id;
+        offer.rejectedAt = now;
+        order.status = 'in_progress';
+        await postgresStore.saveOrders(orders);
+        createNotification({
+          userId: order.sellerId,
+          type: 'invoice_rejected',
+          title: 'Invoice rejected',
+          message: `Your invoice for "${order.title}" was rejected. Reason: ${reason}`,
+          link: `/workstream/${order.id}`,
+          metadata: { orderId: order.id, offerId: offer.id, reason }
+        });
+      }
+
       offer.status = 'declined'; offer.resolvedAt = now; offer.resolvedBy = caller.id;
       if (offer.kind === 'proposal') {
         const linkedProp = findLinkedProposalForOffer(offer, order);
@@ -6690,7 +6943,17 @@ app.post('/api/offers/:id/:action(accept|decline|cancel)', requireAuth, rateLimi
           linkedProp.status = 'rejected';
           await postgresStore.saveProposals(proposals);
         }
-      } else if (offer.kind === 'invoice' && (order.status === 'delivered' || order.status === 'draft_review')) {
+        if (order.orderType === 'project') {
+          createNotification({
+            userId: order.sellerId,
+            type: 'proposal_declined',
+            title: 'Proposal declined',
+            message: `Your proposal "${offer.title}" was declined by the buyer.`,
+            link: `/workstream/${order.id}`,
+            metadata: { orderId: order.id, offerId: offer.id }
+          });
+        }
+      } else if (offer.kind === 'invoice' && order.orderType !== 'project' && (order.status === 'delivered' || order.status === 'draft_review')) {
         const otherPendingInvoice = workstreamOffers.some(o => o.orderId === order.id && o.id !== offer.id && o.kind === 'invoice' && o.status === 'pending');
         if (!otherPendingInvoice && orderHasEscrow(order.id)) {
           order.status = 'revision';
@@ -6698,7 +6961,7 @@ app.post('/api/offers/:id/:action(accept|decline|cancel)', requireAuth, rateLimi
         }
       }
       await postgresStore.saveOffers(workstreamOffers);
-      postOfferMessage(order, offer, null, `${offer.number} was declined by the buyer.`, 'offer_declined');
+      postOfferMessage(order, offer, null, `${offer.number} was declined by the buyer.${offer.rejectionReason ? ` Reason: ${offer.rejectionReason}` : ''}`, 'offer_declined');
       return res.json({ offer: viewOffer(offer), order: enrichOrderWithServiceInfo(order) });
     }
 
@@ -6761,6 +7024,17 @@ app.post('/api/offers/:id/:action(accept|decline|cancel)', requireAuth, rateLimi
       offer.resolvedAt = now;
       offer.resolvedBy = caller.id;
 
+      if (order.orderType === 'project') {
+        createNotification({
+          userId: order.sellerId,
+          type: 'invoice_paid',
+          title: 'Invoice paid',
+          message: `Invoice ${offer.number} for "${order.title}" ($${invoiceAmount}) was approved and paid.`,
+          link: `/workstream/${order.id}`,
+          metadata: { orderId: order.id, offerId: offer.id, amount: invoiceAmount }
+        });
+      }
+
       syncUserBalances();
       await postgresStore.saveOffers(workstreamOffers);
       await postgresStore.saveOrders(orders);
@@ -6815,7 +7089,7 @@ app.post('/api/offers/:id/:action(accept|decline|cancel)', requireAuth, rateLimi
         await postgresStore.saveOrders(orders);
         return res.status(400).json({ error: fundingErr.message || 'Failed to fund escrow for offer.' });
       }
-    } else if (isFollowOnAfterCompletion || isCancelledGigFollowOn) {
+    } else if (isFollowOnAfterCompletion || isCancelledGigFollowOn || (order.orderType === 'project' && (order.status === 'completed' || order.status === 'cancelled') && offer.kind === 'proposal')) {
       // PeoplePerHour Follow-On Proposal / Deposit accepted in the same WorkStream after previous invoice was paid
       // Correct model: New Order in same Workspace
       const newOrderId = 'ord_' + randomUUID().slice(0, 12);
@@ -6887,6 +7161,18 @@ app.post('/api/offers/:id/:action(accept|decline|cancel)', requireAuth, rateLimi
 
       offer.orderId = newOrder.id;
       offer.status = 'accepted';
+
+      if (orderType === 'project') {
+        createNotification({
+          userId: newOrder.sellerId,
+          type: 'proposal_accepted',
+          title: 'Follow-on proposal accepted',
+          message: `Your follow-on proposal "${offer.title}" was accepted and escrow has been funded.`,
+          link: `/workstream/${newOrderId}`,
+          metadata: { orderId: newOrderId, offerId: offer.id }
+        });
+      }
+
       postOfferMessage(enrichedOrder, offer, null, `Follow-on ${OFFER_LABEL[offer.kind]} ${offer.number} ("${offer.title}") was accepted and $${offer.amount.toLocaleString()} was funded into escrow in a new Order (#${newOrderId}).`, 'offer_accepted');
       return res.json({ offer: viewOffer(offer), order: enrichOrderWithServiceInfo(enrichedOrder) });
     } else {

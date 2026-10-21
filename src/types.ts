@@ -447,6 +447,12 @@ export interface WorkstreamOffer {
   createdAt: string;
   resolvedAt?: string;
   resolvedBy?: string;
+  responseDeadline?: string;
+  deadlineApproachingNotified?: boolean;
+  rejectionReason?: string;
+  rejectedBy?: string;
+  rejectedAt?: string;
+  autoProcessedAt?: string;
   metadata?: any;
 }
 

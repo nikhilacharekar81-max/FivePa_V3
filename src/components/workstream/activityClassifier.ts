@@ -70,6 +70,24 @@ export function formatEventTime(ts: string | undefined): string {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+/** Formats timestamp into relative time string matching Fiverr design (e.g. "2 hours ago", "1 hour ago", "Just now") */
+export function formatRelativeTime(ts: string | undefined): string {
+  if (!ts) return '';
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return ts;
+  const now = new Date();
+  const diffSec = Math.max(0, Math.floor((now.getTime() - d.getTime()) / 1000));
+  if (diffSec < 60) return 'Just now';
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHour = Math.floor(diffMin / 60);
+  if (diffHour < 24) return `${diffHour} hour${diffHour === 1 ? '' : 's'} ago`;
+  const diffDays = Math.floor(diffHour / 24);
+  if (diffDays === 1) return 'Yesterday';
+  if (diffDays < 7) return `${diffDays} days ago`;
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
 /** Classifies any workstream message/event into its domain category and visual card specs */
 export function classifyActivityEvent(msg: WorkstreamMessage): ClassifiedEvent {
   const action = msg.metadata?.action || '';

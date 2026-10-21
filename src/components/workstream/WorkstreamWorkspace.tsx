@@ -251,8 +251,8 @@ export const WorkstreamWorkspace: React.FC<WorkstreamWorkspaceProps> = ({
     }
   }, [lastMessage?.id]);
 
-  const handleOfferAction = async (offerId: string, action: 'accept' | 'decline' | 'cancel') => {
-    const result = await respond(offerId, action);
+  const handleOfferAction = async (offerId: string, action: 'accept' | 'decline' | 'cancel', reason?: string) => {
+    const result = await respond(offerId, action, reason);
     if (result.ok) onOrderChanged?.(result.order || null, result.newOrder);
     return result;
   };

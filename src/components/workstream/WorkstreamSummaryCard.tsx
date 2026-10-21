@@ -31,38 +31,45 @@ export const WorkstreamSummaryCard: React.FC<WorkstreamSummaryCardProps> = ({
 
   return (
     <div className="bg-white border border-slate-200/90 rounded-3xl p-6 shadow-xs space-y-6">
-      {/* FIVERR-STYLE FINANCIAL METRICS CARD (WorkPerHour Green Branded) */}
-      <div className="bg-gradient-to-br from-emerald-600 via-emerald-700 to-teal-800 text-white p-6 rounded-2xl relative overflow-hidden shadow-sm space-y-4">
-        {/* Subtle decorative background glow */}
-        <div className="absolute -right-6 -bottom-6 w-32 h-32 bg-emerald-500/20 rounded-full blur-2xl pointer-events-none" />
-
-        <div className="relative z-10 flex items-center justify-between">
-          <div>
-            <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-200 block mb-1">
-              Held in Escrow
-            </span>
-            <div className="text-3xl font-black tracking-tight font-mono tabular-nums">
-              {currencySymbol}{Number(activeEscrow || 0).toLocaleString()}
+      {/* FIVERR-STYLE FINANCIAL METRICS CARD */}
+      <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-xs space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-11 h-11 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0">
+              <ShieldCheck className="w-5 h-5 text-emerald-600" />
+            </div>
+            <div>
+              <h4 className="text-sm font-bold text-gray-900 leading-tight">Escrow Vault</h4>
+              <p className="text-xs text-gray-400 font-normal mt-0.5">WorkPerHour Protection</p>
             </div>
           </div>
-          <div className="w-12 h-12 bg-white/10 backdrop-blur-md border border-white/20 rounded-2xl flex items-center justify-center text-white shadow-xs">
-            <ShieldCheck className="w-6 h-6 text-emerald-300" />
-          </div>
+          <span className="px-2.5 py-0.5 rounded-full border text-[10px] font-bold bg-emerald-50 text-emerald-800 border-emerald-200">
+            {activeEscrow > 0 ? 'Protected' : (releasedAmt > 0 ? 'Released' : 'Deposit Ready')}
+          </span>
         </div>
 
-        <div className="relative z-10 pt-4 border-t border-white/15 grid grid-cols-2 gap-4 text-xs">
+        {/* Light grey rounded inset box */}
+        <div className="bg-slate-50/80 rounded-xl p-4 border border-slate-100/90 space-y-3">
           <div>
-            <span className="text-[10px] text-emerald-200/80 uppercase font-bold tracking-wider block mb-0.5">Released / Paid</span>
-            <span className="font-mono font-bold text-white text-sm tabular-nums">{currencySymbol}{Number(releasedAmt || 0).toLocaleString()}</span>
+            <div className="text-xs font-normal text-gray-500">Held in Escrow</div>
+            <div className="text-2xl font-bold text-gray-900 mt-1 font-mono tabular-nums tracking-tight">
+              {currencySymbol}{Number(activeEscrow || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </div>
           </div>
-          <div className="text-right">
-            <span className="text-[10px] text-emerald-200/80 uppercase font-bold tracking-wider block mb-0.5">Total Value</span>
-            <span className="font-mono font-bold text-white text-sm tabular-nums">{currencySymbol}{Number(order.amount || 0).toLocaleString()}</span>
+          <div className="pt-3 border-t border-slate-200/60 grid grid-cols-2 gap-3 text-xs">
+            <div>
+              <span className="text-[10px] text-gray-400 uppercase font-bold tracking-wider block mb-0.5">Released / Paid</span>
+              <span className="font-mono font-bold text-gray-900 text-sm tabular-nums">{currencySymbol}{Number(releasedAmt || 0).toLocaleString()}</span>
+            </div>
+            <div className="text-right">
+              <span className="text-[10px] text-gray-400 uppercase font-bold tracking-wider block mb-0.5">Total Value</span>
+              <span className="font-mono font-bold text-gray-900 text-sm tabular-nums">{currencySymbol}{Number(order.amount || 0).toLocaleString()}</span>
+            </div>
           </div>
         </div>
 
-        <div className="relative z-10 pt-2 border-t border-white/10 flex items-center gap-2 text-xs text-emerald-100 font-medium">
-          <Lock className="w-3.5 h-3.5 text-emerald-300 shrink-0" />
+        <div className="flex items-center gap-2 text-xs text-slate-500 font-medium">
+          <Lock className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
           <span className="leading-snug">
             {activeEscrow > 0
               ? '100% Secured in Escrow Vault'
