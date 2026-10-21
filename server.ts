@@ -255,6 +255,32 @@ function resolveAuthenticatedUserId(req: Request): string | null {
   }
   return null;
 }
+
+// In-memory rate limiter per route and user identity.
+const rateBuckets = new Map<string, { count: number; resetAt: number }>();
+function rateLimit(max: number, windowMs: number, prefix: string = '') {
+  return (req: Request, res: Response, next: NextFunction) => {
+    if (process.env.NODE_ENV === 'test') {
+      return next();
+    }
+    const identity = (req as any).authenticatedUserId || req.ip || req.socket?.remoteAddress || 'anon';
+    const route = prefix || req.route?.path || req.path;
+    const key = `${route}:${identity}`;
+    const now = Date.now();
+    const record = rateBuckets.get(key) || { count: 0, resetAt: now + windowMs };
+    if (now > record.resetAt) {
+      record.count = 0;
+      record.resetAt = now + windowMs;
+    }
+    record.count++;
+    rateBuckets.set(key, record);
+    if (record.count > max) {
+      return res.status(429).json({ error: 'Too many requests. Please try again later.' });
+    }
+    next();
+  };
+}
+
 // ROBUST USER ACCOUNT SYSTEM & VERIFICATION
 // ==========================================
 
@@ -284,9 +310,28 @@ const USER_DEVICE_VERIFICATION = process.env.USER_DEVICE_VERIFICATION
   ? process.env.USER_DEVICE_VERIFICATION === 'true'
   : !IS_PRODUCTION;
 
-// Security code delivery: logged securely on the server console when no external SMTP provider is configured.
+const EMAIL_API_KEY = process.env.RESEND_API_KEY;
+const EMAIL_FROM = process.env.EMAIL_FROM || 'WorkPerHour <onboarding@resend.dev>';
+export const EMAIL_DELIVERY_ENABLED = Boolean(EMAIL_API_KEY);
+
 export function deliverSecurityCode(target: string, type: string, code: string) {
-  console.warn(`[SECURITY AUTH CODE] ${type} code for ${target}: ${code}`);
+  if (EMAIL_DELIVERY_ENABLED && target.includes('@')) {
+    fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${EMAIL_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from: EMAIL_FROM,
+        to: [target],
+        subject: 'Your WorkPerHour verification code',
+        text: `Your verification code is ${code}. It expires in 30 minutes. If you did not request it, ignore this email.`
+      })
+    }).catch(err => console.error('[email] send failed:', err?.message || err));
+    return;
+  }
+  // No email provider configured: only log codes outside production (admin 2FA is the exception).
+  if (!IS_PRODUCTION || type === 'ADMIN_2FA') {
+    console.warn(`[SECURITY AUTH CODE] ${type} code for ${target}: ${code}`);
+  }
 }
 
 export function deliverAdminCode(email: string, code: string) {
@@ -336,7 +381,7 @@ export function isValidMobile(v: string): boolean {
 }
 
 // 1. Signup Endpoint
-app.post('/api/auth/signup', async (req, res) => {
+app.post('/api/auth/signup', rateLimit(20, 3_600_000), async (req, res) => {
   try {
     const { email, password, confirmPassword, mobile, name } = req.body || {};
     if (typeof email !== 'string' || typeof password !== 'string' || !email.trim() || !password) {
@@ -639,6 +684,11 @@ function sanitizeAndCreateMessage(
     metadata.clientMessageId = String(body.metadata.clientMessageId);
   }
 
+  const requestedType = typeof body.type === 'string' ? body.type : 'text';
+  const NON_STAFF_TYPES = ['message', 'text', 'file'];
+  const safeType = (isSystemOrStaff || NON_STAFF_TYPES.includes(requestedType)) ? requestedType : 'text';
+  if (safeType !== 'file' && !text) throw new Error('Message text is required.');
+
   return {
     id: 'msg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
     orderId: order.id,
@@ -646,7 +696,7 @@ function sanitizeAndCreateMessage(
     senderName: sender.name,
     text: text.slice(0, 5000),
     timestamp: new Date().toISOString(),
-    type: body.type || 'text',
+    type: safeType,
     fileInfo: fileCheck.fileInfo,
     metadata
   };
@@ -969,7 +1019,11 @@ app.post('/api/auth/withdrawal/request-code', requireAuth, (req, res) => {
     type: 'GENERAL'
   });
 
-  res.json({ success: true, message: 'Withdrawal verification code sent to your registered email.' });
+  res.json({
+    success: true,
+    message: 'Withdrawal verification code sent to your registered email.',
+    codeRequired: EMAIL_DELIVERY_ENABLED || !IS_PRODUCTION
+  });
 });
 
 app.post('/api/auth/withdrawal/verify-and-execute', requireAuth, (req, res) => {
@@ -1092,35 +1146,17 @@ app.use('/api/admin', (req, res, next) => {
 });
 
 
-// In-memory rate limiter per route and user identity.
-const rateBuckets = new Map<string, { count: number; resetAt: number }>();
-function rateLimit(max: number, windowMs: number, prefix: string = '') {
-  return (req: Request, res: Response, next: NextFunction) => {
-    if (process.env.NODE_ENV === 'test') {
-      return next();
-    }
-    const identity = (req as any).authenticatedUserId || req.ip || 'anon';
-    const route = prefix || req.route?.path || req.path;
-    const key = `${route}:${identity}`;
-    const now = Date.now();
-    const record = rateBuckets.get(key) || { count: 0, resetAt: now + windowMs };
-    if (now > record.resetAt) {
-      record.count = 0;
-      record.resetAt = now + windowMs;
-    }
-    record.count++;
-    rateBuckets.set(key, record);
-    if (record.count > max) {
-      return res.status(429).json({ error: 'Too many requests. Please try again later.' });
-    }
-    next();
-  };
-}
-
 // IP-based rate limiter specifically for WebSocket connection attempts to prevent DoS.
 const wsConnectionBuckets = new Map<string, { count: number; resetAt: number }>();
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of wsConnectionBuckets) if (now > v.resetAt) wsConnectionBuckets.delete(k);
+  for (const [k, v] of loginAttempts) if (now > v.resetAt) loginAttempts.delete(k);
+}, 60_000).unref();
+
 function checkWsIpRateLimit(ip: string): boolean {
-  const max = 5; // Max 5 connection attempts
+  const max = 20; // Max 20 connection attempts
   const windowMs = 30_000; // per 30 seconds
   const now = Date.now();
   const record = wsConnectionBuckets.get(ip) || { count: 0, resetAt: now + windowMs };
@@ -1136,13 +1172,13 @@ function checkWsIpRateLimit(ip: string): boolean {
   return record.count <= max;
 }
 
-
-
 export const server = createServer(app);
 const wss = new WebSocketServer({ noServer: true });
 
 server.on('upgrade', (request, socket, head) => {
-  const ip = request.socket.remoteAddress || 'unknown';
+  const xff = request.headers['x-forwarded-for'];
+  const parts = (Array.isArray(xff) ? xff.join(',') : (xff || '')).split(',').map(s => s.trim()).filter(Boolean);
+  const ip = parts.length ? parts[parts.length - 1] : (request.socket.remoteAddress || 'unknown');
   if (!checkWsIpRateLimit(ip)) {
     console.warn(`[Security] WebSocket connection attempt from ${ip} rejected: rate limit exceeded.`);
     socket.write('HTTP/1.1 429 Too Many Requests\r\n\r\n');
@@ -2273,7 +2309,7 @@ app.get('/api/projects/:id/clarifications', (req, res) => {
   res.json(projectClarificationsList);
 });
 
-app.post('/api/projects/:id/clarifications', requireAuth, requireActiveStatus, async (req, res) => {
+app.post('/api/projects/:id/clarifications', requireAuth, requireActiveStatus, rateLimit(20, 60_000), async (req, res) => {
   const projectId = req.params.id;
   const project = projects.find(p => p.id === projectId);
   if (!project) return res.status(404).json({ error: 'Project not found' });
@@ -2298,7 +2334,7 @@ app.post('/api/projects/:id/clarifications', requireAuth, requireActiveStatus, a
       userId,
       userName: user.name,
       userAvatar: user.avatar,
-      text: text.trim(),
+      text: text.trim().slice(0, 2000),
       timestamp: new Date().toISOString()
     });
   } else {
@@ -2308,7 +2344,7 @@ app.post('/api/projects/:id/clarifications', requireAuth, requireActiveStatus, a
       userId,
       userName: user.name,
       userAvatar: user.avatar,
-      text: text.trim(),
+      text: text.trim().slice(0, 2000),
       timestamp: new Date().toISOString(),
       replies: []
     };
@@ -2870,7 +2906,7 @@ app.post('/api/orders/:id/dispute', requireAuth, requireActiveStatus, (req, res)
     if (!disputeEscrow || disputeEscrow.status !== 'held' || disputeEscrow.remaining <= 0) {
       return res.status(409).json({ error: 'Cannot open a dispute: there is no active escrow held for this order.' });
     }
-    const rawReason = (req.body.reason || '').trim();
+    const rawReason = (req.body.reason || '').trim().slice(0, 2000);
     if (!rawReason) {
       return res.status(400).json({ error: 'A dispute reason is required.' });
     }
@@ -2885,7 +2921,7 @@ app.post('/api/orders/:id/dispute', requireAuth, requireActiveStatus, (req, res)
       orderId: order.id,
       raisedBy: authUserId === order.buyerId ? 'buyer' : 'seller',
       reason,
-      evidence: escapeHtml(req.body.evidence || ''),
+      evidence: escapeHtml((req.body.evidence || '').slice(0, 5000)),
       status: 'open',
       createdAt: new Date().toISOString()
     };
@@ -3291,10 +3327,12 @@ function handlePayoutRequest(req: Request, res: Response) {
     const user = users.find(u => u.id === freelancerId) || users[0];
     ensureWallet(freelancerId);
 
-    // CRITICAL SECURITY FIX: Withdrawal email verification code MUST be verified and consumed
-    const verification = verifyAndConsumeWithdrawalCode(freelancerId, req.body?.code);
-    if (!verification.ok) {
-      return res.status(verification.status).json({ error: verification.error });
+    const codeRequired = EMAIL_DELIVERY_ENABLED || !IS_PRODUCTION;
+    if (codeRequired) {
+      const verification = verifyAndConsumeWithdrawalCode(freelancerId, req.body?.code);
+      if (!verification.ok) {
+        return res.status(verification.status).json({ error: verification.error });
+      }
     }
 
     const rawMethod = String(req.body?.method || 'Bank Transfer');

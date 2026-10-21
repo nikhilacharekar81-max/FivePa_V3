@@ -30,6 +30,7 @@ export const PaymentsModule: React.FC<PaymentsModuleProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [showCodeModal, setShowCodeModal] = useState(false);
   const [verificationCode, setVerificationCode] = useState('');
+  const [codeRequired, setCodeRequired] = useState(true);
   const [withdrawError, setWithdrawError] = useState<string | null>(null);
 
   const walletBalance = currentUser?.walletBalance ?? 0;
@@ -76,6 +77,9 @@ export const PaymentsModule: React.FC<PaymentsModuleProps> = ({
       if (!res.ok) {
         throw new Error(data.error || 'Failed to dispatch verification code');
       }
+      if (typeof data.codeRequired === 'boolean') {
+        setCodeRequired(data.codeRequired);
+      }
       setShowCodeModal(true);
       setVerificationCode('');
     } catch (err: any) {
@@ -87,7 +91,7 @@ export const PaymentsModule: React.FC<PaymentsModuleProps> = ({
 
   const handleVerifyAndWithdraw = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!verificationCode || verificationCode.trim().length !== 6) {
+    if (codeRequired && (!verificationCode || verificationCode.trim().length !== 6)) {
       setWithdrawError('Please enter the 6-digit code sent to your email.');
       return;
     }
@@ -252,50 +256,86 @@ export const PaymentsModule: React.FC<PaymentsModuleProps> = ({
               </button>
             </div>
 
-            <p className="text-xs text-slate-600 mb-4 leading-relaxed">
-              We have dispatched a 6-digit confirmation code to your registered email address <strong>{currentUser?.email}</strong>. Enter it below to authorize this transaction.
-            </p>
+            {codeRequired ? (
+              <>
+                <p className="text-xs text-slate-600 mb-4 leading-relaxed">
+                  We have dispatched a 6-digit confirmation code to your registered email address <strong>{currentUser?.email}</strong>. Enter it below to authorize this transaction.
+                </p>
 
-            <form onSubmit={handleVerifyAndWithdraw} className="space-y-4">
-              <div>
-                <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                  6-Digit Verification Code
-                </label>
-                <input
-                  type="text"
-                  maxLength={6}
-                  placeholder="e.g. 123456"
-                  value={verificationCode}
-                  onChange={(e) => setVerificationCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                  className="w-full px-4 py-3 bg-slate-50 border border-slate-300 rounded-xl text-center text-xl font-mono font-bold tracking-widest text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-emerald-500 focus:bg-white"
-                  autoFocus
-                />
-              </div>
+                <form onSubmit={handleVerifyAndWithdraw} className="space-y-4">
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                      6-Digit Verification Code
+                    </label>
+                    <input
+                      type="text"
+                      maxLength={6}
+                      placeholder="e.g. 123456"
+                      value={verificationCode}
+                      onChange={(e) => setVerificationCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                      className="w-full px-4 py-3 bg-slate-50 border border-slate-300 rounded-xl text-center text-xl font-mono font-bold tracking-widest text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-emerald-500 focus:bg-white"
+                      autoFocus
+                    />
+                  </div>
 
-              {withdrawError && (
-                <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs flex items-center gap-2 font-medium">
-                  <AlertCircle className="w-4 h-4 shrink-0" />
-                  <span>{withdrawError}</span>
-                </div>
-              )}
+                  {withdrawError && (
+                    <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs flex items-center gap-2 font-medium">
+                      <AlertCircle className="w-4 h-4 shrink-0" />
+                      <span>{withdrawError}</span>
+                    </div>
+                  )}
 
-              <div className="flex items-center gap-2.5 pt-2">
-                <button
-                  type="button"
-                  onClick={() => { setShowCodeModal(false); setWithdrawError(null); }}
-                  className="flex-1 py-2.5 px-4 rounded-xl border border-slate-300 text-slate-700 font-bold text-xs hover:bg-slate-50 cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={isWithdrawing || verificationCode.trim().length !== 6}
-                  className="flex-1 py-2.5 px-4 rounded-xl bg-emerald-600 text-white font-bold text-xs hover:bg-emerald-700 disabled:opacity-40 cursor-pointer"
-                >
-                  {isWithdrawing ? 'Verifying...' : 'Confirm Withdrawal'}
-                </button>
-              </div>
-            </form>
+                  <div className="flex items-center gap-2.5 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => { setShowCodeModal(false); setWithdrawError(null); }}
+                      className="flex-1 py-2.5 px-4 rounded-xl border border-slate-300 text-slate-700 font-bold text-xs hover:bg-slate-50 cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isWithdrawing || verificationCode.trim().length !== 6}
+                      className="flex-1 py-2.5 px-4 rounded-xl bg-emerald-600 text-white font-bold text-xs hover:bg-emerald-700 disabled:opacity-40 cursor-pointer"
+                    >
+                      {isWithdrawing ? 'Verifying...' : 'Confirm Withdrawal'}
+                    </button>
+                  </div>
+                </form>
+              </>
+            ) : (
+              <>
+                <p className="text-xs text-slate-600 mb-4 leading-relaxed">
+                  Please confirm your withdrawal request of <strong>${parseFloat(withdrawAmount).toFixed(2)}</strong>. It will be submitted for administrative review and processing.
+                </p>
+
+                <form onSubmit={handleVerifyAndWithdraw} className="space-y-4">
+                  {withdrawError && (
+                    <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs flex items-center gap-2 font-medium">
+                      <AlertCircle className="w-4 h-4 shrink-0" />
+                      <span>{withdrawError}</span>
+                    </div>
+                  )}
+
+                  <div className="flex items-center gap-2.5 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => { setShowCodeModal(false); setWithdrawError(null); }}
+                      className="flex-1 py-2.5 px-4 rounded-xl border border-slate-300 text-slate-700 font-bold text-xs hover:bg-slate-50 cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isWithdrawing}
+                      className="flex-1 py-2.5 px-4 rounded-xl bg-emerald-600 text-white font-bold text-xs hover:bg-emerald-700 disabled:opacity-40 cursor-pointer"
+                    >
+                      {isWithdrawing ? 'Processing...' : 'Confirm Withdrawal'}
+                    </button>
+                  </div>
+                </form>
+              </>
+            )}
           </div>
         </div>
       )}

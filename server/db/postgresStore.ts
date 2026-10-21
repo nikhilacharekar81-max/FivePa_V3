@@ -86,6 +86,7 @@ export function getPool(): pkg.Pool {
 export class PostgresStore {
   public isHydrated: boolean = process.env.NODE_ENV === 'test';
   private locks = new Map<string, Promise<void>>();
+  private pending = new Map<string, Promise<void>>();
 
   constructor(pool?: pkg.Pool) {
     if (pool) {
@@ -99,14 +100,15 @@ export class PostgresStore {
   }
 
   private withLock(key: string, fn: () => Promise<void>): Promise<void> {
-    if (!isPostgresEnabled()) {
-      return Promise.resolve();
-    }
-    if (!this.isHydrated && key !== 'initialization') {
-      // Allow saving during hydration
-    }
+    if (!isPostgresEnabled()) return Promise.resolve();
+    // Never save before the in-memory data is fully loaded (an empty array would delete rows).
+    if (!this.isHydrated && key !== 'initialization' && !key.startsWith('meta_')) return Promise.resolve();
+    // A save for this key is already waiting: it reads the latest in-memory arrays when it runs, so reuse it.
+    const queued = this.pending.get(key);
+    if (queued) return queued;
     const prev = this.locks.get(key) || Promise.resolve();
-    const next = prev.catch(() => {}).then(fn);
+    const next = prev.catch(() => {}).then(async () => { this.pending.delete(key); await fn(); });
+    this.pending.set(key, next);
     this.locks.set(key, next);
     return next;
   }
@@ -250,8 +252,7 @@ export class PostgresStore {
           );
         }
         if (seen.size > 0) {
-          const placeholders = Array.from(seen).map((_, i) => `$${i + 1}`).join(',');
-          await client.query(`DELETE FROM orders WHERE id NOT IN (${placeholders})`, Array.from(seen));
+          await client.query('DELETE FROM orders WHERE id <> ALL($1)', [Array.from(seen)]);
         } else {
           await client.query('DELETE FROM orders');
         }
@@ -339,8 +340,7 @@ export class PostgresStore {
           );
         }
         if (seen.size > 0) {
-          const placeholders = Array.from(seen).map((_, i) => `$${i + 1}`).join(',');
-          await client.query(`DELETE FROM messages WHERE id NOT IN (${placeholders})`, Array.from(seen));
+          await client.query('DELETE FROM messages WHERE id <> ALL($1)', [Array.from(seen)]);
         } else {
           await client.query('DELETE FROM messages');
         }
@@ -411,8 +411,7 @@ export class PostgresStore {
           );
         }
         if (seen.size > 0) {
-          const placeholders = Array.from(seen).map((_, i) => `$${i + 1}`).join(',');
-          await client.query(`DELETE FROM reviews WHERE id NOT IN (${placeholders})`, Array.from(seen));
+          await client.query('DELETE FROM reviews WHERE id <> ALL($1)', [Array.from(seen)]);
         } else {
           await client.query('DELETE FROM reviews');
         }
@@ -507,8 +506,7 @@ export class PostgresStore {
           );
         }
         if (seen.size > 0) {
-          const placeholders = Array.from(seen).map((_, i) => `$${i + 1}`).join(',');
-          await client.query(`DELETE FROM users WHERE id NOT IN (${placeholders})`, Array.from(seen));
+          await client.query('DELETE FROM users WHERE id <> ALL($1)', [Array.from(seen)]);
         } else {
           await client.query('DELETE FROM users');
         }
@@ -606,8 +604,7 @@ export class PostgresStore {
           );
         }
         if (seen.size > 0) {
-          const placeholders = Array.from(seen).map((_, i) => `$${i + 1}`).join(',');
-          await client.query(`DELETE FROM gigs WHERE id NOT IN (${placeholders})`, Array.from(seen));
+          await client.query('DELETE FROM gigs WHERE id <> ALL($1)', [Array.from(seen)]);
         } else {
           await client.query('DELETE FROM gigs');
         }
@@ -693,8 +690,7 @@ export class PostgresStore {
           );
         }
         if (seen.size > 0) {
-          const placeholders = Array.from(seen).map((_, i) => `$${i + 1}`).join(',');
-          await client.query(`DELETE FROM projects WHERE id NOT IN (${placeholders})`, Array.from(seen));
+          await client.query('DELETE FROM projects WHERE id <> ALL($1)', [Array.from(seen)]);
         } else {
           await client.query('DELETE FROM projects');
         }
@@ -768,8 +764,7 @@ export class PostgresStore {
           );
         }
         if (seen.size > 0) {
-          const placeholders = Array.from(seen).map((_, i) => `$${i + 1}`).join(',');
-          await client.query(`DELETE FROM proposals WHERE id NOT IN (${placeholders})`, Array.from(seen));
+          await client.query('DELETE FROM proposals WHERE id <> ALL($1)', [Array.from(seen)]);
         } else {
           await client.query('DELETE FROM proposals');
         }
@@ -843,8 +838,7 @@ export class PostgresStore {
           );
         }
         if (seen.size > 0) {
-          const placeholders = Array.from(seen).map((_, i) => `$${i + 1}`).join(',');
-          await client.query(`DELETE FROM workspaces WHERE workspace_id NOT IN (${placeholders})`, Array.from(seen));
+          await client.query('DELETE FROM workspaces WHERE workspace_id <> ALL($1)', [Array.from(seen)]);
         } else {
           await client.query('DELETE FROM workspaces');
         }
@@ -919,8 +913,7 @@ export class PostgresStore {
           );
         }
         if (seen.size > 0) {
-          const placeholders = Array.from(seen).map((_, i) => `$${i + 1}`).join(',');
-          await client.query(`DELETE FROM workstream_offers WHERE id NOT IN (${placeholders})`, Array.from(seen));
+          await client.query('DELETE FROM workstream_offers WHERE id <> ALL($1)', [Array.from(seen)]);
         } else {
           await client.query('DELETE FROM workstream_offers');
         }
@@ -990,8 +983,7 @@ export class PostgresStore {
           );
         }
         if (seen.size > 0) {
-          const placeholders = Array.from(seen).map((_, i) => `$${i + 1}`).join(',');
-          await client.query(`DELETE FROM custom_invoices WHERE id NOT IN (${placeholders})`, Array.from(seen));
+          await client.query('DELETE FROM custom_invoices WHERE id <> ALL($1)', [Array.from(seen)]);
         } else {
           await client.query('DELETE FROM custom_invoices');
         }
@@ -1059,8 +1051,7 @@ export class PostgresStore {
           );
         }
         if (seen.size > 0) {
-          const placeholders = Array.from(seen).map((_, i) => `$${i + 1}`).join(',');
-          await client.query(`DELETE FROM disputes WHERE id NOT IN (${placeholders})`, Array.from(seen));
+          await client.query('DELETE FROM disputes WHERE id <> ALL($1)', [Array.from(seen)]);
         } else {
           await client.query('DELETE FROM disputes');
         }
@@ -1119,8 +1110,7 @@ export class PostgresStore {
           );
         }
         if (seen.size > 0) {
-          const placeholders = Array.from(seen).map((_, i) => `$${i + 1}`).join(',');
-          await client.query(`DELETE FROM refunds WHERE id NOT IN (${placeholders})`, Array.from(seen));
+          await client.query('DELETE FROM refunds WHERE id <> ALL($1)', [Array.from(seen)]);
         } else {
           await client.query('DELETE FROM refunds');
         }
@@ -1173,8 +1163,7 @@ export class PostgresStore {
           );
         }
         if (seen.size > 0) {
-          const placeholders = Array.from(seen).map((_, i) => `$${i + 1}`).join(',');
-          await client.query(`DELETE FROM payouts WHERE id NOT IN (${placeholders})`, Array.from(seen));
+          await client.query('DELETE FROM payouts WHERE id <> ALL($1)', [Array.from(seen)]);
         } else {
           await client.query('DELETE FROM payouts');
         }
@@ -1228,8 +1217,7 @@ export class PostgresStore {
           );
         }
         if (seen.size > 0) {
-          const placeholders = Array.from(seen).map((_, i) => `$${i + 1}`).join(',');
-          await client.query(`DELETE FROM support_tickets WHERE id NOT IN (${placeholders})`, Array.from(seen));
+          await client.query('DELETE FROM support_tickets WHERE id <> ALL($1)', [Array.from(seen)]);
         } else {
           await client.query('DELETE FROM support_tickets');
         }
@@ -1283,8 +1271,7 @@ export class PostgresStore {
           );
         }
         if (seen.size > 0) {
-          const placeholders = Array.from(seen).map((_, i) => `$${i + 1}`).join(',');
-          await client.query(`DELETE FROM audit_logs WHERE id NOT IN (${placeholders})`, Array.from(seen));
+          await client.query('DELETE FROM audit_logs WHERE id <> ALL($1)', [Array.from(seen)]);
         } else {
           await client.query('DELETE FROM audit_logs');
         }
@@ -1343,8 +1330,7 @@ export class PostgresStore {
           );
         }
         if (seen.size > 0) {
-          const placeholders = Array.from(seen).map((_, i) => `$${i + 1}`).join(',');
-          await client.query(`DELETE FROM user_emails WHERE id NOT IN (${placeholders})`, Array.from(seen));
+          await client.query('DELETE FROM user_emails WHERE id <> ALL($1)', [Array.from(seen)]);
         } else {
           await client.query('DELETE FROM user_emails');
         }
@@ -1469,31 +1455,28 @@ export class PostgresStore {
     if (!isPostgresEnabled()) {
       return { inserted: true };
     }
-    const lockKey = n.dedupKey ? `notif_dedup_${n.dedupKey}` : `notif_${n.id}`;
-    return this.withLock(lockKey, async () => {
-      try {
-        await this.getPool().query(
-          `INSERT INTO notifications (id, user_id, type, title, message, link, read, created_at, dedup_key)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-           ON CONFLICT (id) DO UPDATE SET
-             read = EXCLUDED.read`,
-          [n.id, n.userId, n.type, n.title, n.message, n.link || null, !!n.read, n.createdAt, n.dedupKey || null]
-        );
-        return { inserted: true };
-      } catch (err: any) {
-        const isDedupConflict =
-          err?.code === '23505' &&
-          (err?.constraint?.includes('dedup') ||
-           err?.detail?.includes('dedup_key') ||
-           err?.message?.includes('dedup_key') ||
-           Boolean(n.dedupKey));
+    try {
+      await this.getPool().query(
+        `INSERT INTO notifications (id, user_id, type, title, message, link, read, created_at, dedup_key)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         ON CONFLICT (id) DO UPDATE SET
+           read = EXCLUDED.read`,
+        [n.id, n.userId, n.type, n.title, n.message, n.link || null, !!n.read, n.createdAt, n.dedupKey || null]
+      );
+      return { inserted: true };
+    } catch (err: any) {
+      const isDedupConflict =
+        err?.code === '23505' &&
+        (err?.constraint?.includes('dedup') ||
+         err?.detail?.includes('dedup_key') ||
+         err?.message?.includes('dedup_key') ||
+         Boolean(n.dedupKey));
 
-        if (isDedupConflict) {
-          return { inserted: false, duplicate: true };
-        }
-        throw err;
+      if (isDedupConflict) {
+        return { inserted: false, duplicate: true };
       }
-    });
+      throw err;
+    }
   }
 
   async listAllNotifications(): Promise<Notification[]> {
@@ -1548,8 +1531,7 @@ export class PostgresStore {
           );
         }
         if (seen.size > 0) {
-          const placeholders = Array.from(seen).map((_, i) => `$${i + 1}`).join(',');
-          await client.query(`DELETE FROM project_clarifications WHERE id NOT IN (${placeholders})`, Array.from(seen));
+          await client.query('DELETE FROM project_clarifications WHERE id <> ALL($1)', [Array.from(seen)]);
         } else {
           await client.query('DELETE FROM project_clarifications');
         }
