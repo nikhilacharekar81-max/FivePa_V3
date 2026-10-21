@@ -40,7 +40,8 @@ import type {
   UserEmail,
   SiteFeeSettings,
   WorkstreamUploadRecord,
-  Notification
+  Notification,
+  ExtensionRequest
 } from '../src/types.js';
 
 export type {
@@ -65,7 +66,8 @@ export type {
   UserEmail,
   SiteFeeSettings,
   WorkstreamUploadRecord,
-  Notification
+  Notification,
+  ExtensionRequest
 };
 
 export let notifications: Notification[] = [];

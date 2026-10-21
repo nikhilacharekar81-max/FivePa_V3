@@ -1148,7 +1148,16 @@ export const ProjectDetailView: React.FC<ProjectDetailViewProps> = ({
                   <span className="font-semibold text-slate-900">{project.buyerMemberSince || 'New buyer'}</span>
                 </div>
 
-                <div className="flex items-center justify-between pt-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500 flex items-center gap-1.5">
+                    <RotateCcw className="w-3.5 h-3.5 text-slate-400" /> Hire Rate
+                  </span>
+                  <span className="font-semibold text-slate-900">
+                    {project.hireRate !== null ? `${Math.round(project.hireRate * 100)}%` : 'Not enough history'}
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between">
                   <span className="text-slate-500 flex items-center gap-1.5">
                     <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" /> Payment Verification
                   </span>

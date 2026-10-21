@@ -48,6 +48,7 @@ import {
   type Payout,
   type Category,
   type Review,
+  type ExtensionRequest,
   type SupportTicket,
   type AuditLog,
   type Message,
@@ -579,9 +580,15 @@ function sanitizeAndCreateMessage(
   fileCheck: { ok: boolean; fileInfo?: any; error?: string }
 ): Message {
   // Stored as typed; React escapes on render, so escaping here would double-escape (&lt; shown literally).
-  const text = typeof body.text === 'string' ? body.text.trim() : '';
+  let text = typeof body.text === 'string' ? body.text.trim() : '';
   const isSystemOrStaff = isStaffUser(sender);
-  
+
+  // Check for off-platform contact info
+  const offPlatformRegex = /(?:\+?\d{1,4}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}|\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b|(?:https?:\/\/)?(?:www\.)?(?:[a-zA-Z0-9-]+\.)+(?:com|net|org|io|me|co)\b/gi;
+  if (!isSystemOrStaff && offPlatformRegex.test(text)) {
+    text = `[WARNING: For your protection, keeping communication and payments on the platform helps preserve your marketplace protections.]\n\n${text}`;
+  }
+
   let type = body.type;
   if (!isSystemOrStaff && (type === 'system' || type === 'deliverable')) {
     type = 'message';
@@ -743,7 +750,7 @@ async function handleLogin(req: Request, res: Response) {
       const newCode = generate6DigitCode();
       emailVerificationCodes.set(userEmailKey, {
         code: newCode,
-        expiresAt: Date.now() + 15 * 60 * 1000,
+        expiresAt: Date.now() + 30 * 60 * 1000,
         lastResendAt: Date.now(),
         attempts: 0
       });
@@ -887,7 +894,7 @@ app.post('/api/auth/forgot-password/request', (req, res) => {
   const code = generate6DigitCode();
   forgotPasswordCodes.set(query, {
     code,
-    expiresAt: Date.now() + 15 * 60 * 1000,
+    expiresAt: Date.now() + 30 * 60 * 1000,
     lastResendAt: Date.now(),
     attempts: 0
   });
@@ -954,7 +961,7 @@ app.post('/api/auth/withdrawal/request-code', requireAuth, (req, res) => {
   const code = generate6DigitCode();
   withdrawalVerificationCodes.set(caller.id, {
     code,
-    expiresAt: Date.now() + 10 * 60 * 1000,
+    expiresAt: Date.now() + 30 * 60 * 1000,
     lastResendAt: Date.now(),
     attempts: 0
   });
@@ -1013,11 +1020,26 @@ function requireAuth(req: Request, res: Response, next: NextFunction) {
   if (!u) {
     return res.status(401).json({ error: 'User account not found.' });
   }
-  if (u.status !== 'active') {
-    return res.status(403).json({ error: 'Forbidden: Account is suspended, restricted, or deactivated.' });
+  if (u.status === 'deactivated') {
+    return res.status(403).json({ error: 'Forbidden: This account has been permanently deactivated.' });
   }
   (req as any).authenticatedUserId = u.id;
   (req as any).authenticatedUser = u;
+  next();
+}
+
+function requireActiveStatus(req: Request, res: Response, next: NextFunction) {
+  const u = (req as any).authenticatedUser;
+  if (!u) return res.status(401).json({ error: 'Authentication required.' });
+  
+  if (u.status === 'suspended') {
+    return res.status(403).json({ error: 'Action forbidden: Your account is currently suspended. Please submit an appeal via Support.' });
+  }
+  if (u.status === 'restricted') {
+    // Some actions might be allowed for restricted users, but generally we block writes here as a safety measure.
+    // We can refine this if specific restricted actions are needed.
+    return res.status(403).json({ error: 'Action forbidden: Your account privileges are restricted. Please contact support.' });
+  }
   next();
 }
 
@@ -1185,12 +1207,12 @@ function notifyUserOnAdminAction(user: User, action: 'suspended' | 'restricted' 
 
   if (action === 'suspended') {
     emailSubject = `[URGENT] WorkSphere Account Suspended - Action Required`;
-    emailBody = `Dear ${user.name},\n\nYour WorkSphere account (${user.email}) has been SUSPENDED by Platform Administration.\n\nReason/Notes: ${notes || 'Violation of Marketplace Policies / Security Investigation'}.\n\nWhile suspended, your active listings, gigs, and bidding capabilities are temporarily paused. If you believe this is an error or wish to file an appeal, please click "Contact Support Desk" or reply directly to support.`;
-    chatText = `🚨 ACCOUNT ALERT: Your WorkSphere account has been SUSPENDED by Platform Administration. Please Contact Support Desk immediately to review your account status and submit an appeal.`;
+    emailBody = `Dear ${user.name},\n\nYour WorkSphere account (${user.email}) has been SUSPENDED by Platform Administration.\n\nReason/Notes: ${notes || 'Violation of Marketplace Policies / Security Investigation'}.\n\nWhile suspended, your active listings, gigs, and bidding capabilities are temporarily paused. \n\nAPPEAL PROCESS:\nIf you believe this is an error, please submit an appeal via the Support Tickets section in your dashboard. Our safety team will review your request within 24-48 business hours.`;
+    chatText = `🚨 ACCOUNT ALERT: Your WorkSphere account has been SUSPENDED by Platform Administration for: ${notes || 'Policy Violation'}. Please submit an appeal via the Support Tickets section in your dashboard to request a review.`;
   } else if (action === 'restricted') {
     emailSubject = `[NOTICE] WorkSphere Account Privileges Restricted`;
-    emailBody = `Dear ${user.name},\n\nYour WorkSphere account (${user.email}) privileges have been RESTRICTED by Platform Administration.\n\nReason/Notes: ${notes || 'Account compliance review / policy warning'}.\n\nCertain actions (such as creating new gigs or submitting bids) are currently limited. Please contact our Support Desk to resolve these restrictions.`;
-    chatText = `⚠️ ACCOUNT NOTICE: Your WorkSphere account privileges have been RESTRICTED by Platform Administration. Please Contact Support Desk for assistance and clarification.`;
+    emailBody = `Dear ${user.name},\n\nYour WorkSphere account (${user.email}) privileges have been RESTRICTED by Platform Administration.\n\nReason/Notes: ${notes || 'Account compliance review / policy warning'}.\n\nCertain actions (such as creating new gigs or submitting bids) are currently limited. \n\nWHAT TO DO:\nYou can still access your existing orders and messages. If you believe this restriction is in error, please submit an appeal via the Support Tickets section in your dashboard.`;
+    chatText = `⚠️ ACCOUNT NOTICE: Your WorkSphere account privileges have been RESTRICTED for: ${notes || 'Compliance Review'}. Please submit an appeal via the Support Tickets section in your dashboard to request a review.`;
   } else if (action === 'deactivated') {
     emailSubject = `[NOTICE] WorkSphere Account Deactivated`;
     emailBody = `Dear ${user.name},\n\nYour WorkSphere account (${user.email}) has been DEACTIVATED by Platform Administration.\n\nReason/Notes: ${notes || 'Account deactivated'}.`;
@@ -2127,10 +2149,35 @@ app.get('/api/gigs', (req, res) => {
   res.json(publicGigs);
 });
 
+function getBuyerStats(buyerId: string) {
+  const buyerOrders = orders.filter(o => o.buyerId === buyerId);
+  const buyerProjects = projects.filter(p => p.buyerId === buyerId);
+  
+  // Projects that reached a decision: hired (in_progress/completed) or closed (unpublished)
+  const decidedProjects = buyerProjects.filter(p => p.status === 'completed' || p.status === 'in_progress' || p.status === 'unpublished');
+  // Projects hired: in_progress or completed
+  const hiredProjects = buyerProjects.filter(p => p.status === 'completed' || p.status === 'in_progress');
+  
+  const totalSpent = buyerOrders.reduce((sum, o) => sum + (o.status === 'completed' ? o.amount : 0), 0);
+  const completedCount = buyerOrders.filter(o => o.status === 'completed').length;
+  
+  const hireRate = decidedProjects.length >= 3 ? hiredProjects.length / decidedProjects.length : null;
+
+  return {
+    buyerSpent: totalSpent,
+    buyerCompletedProjects: completedCount,
+    hireRate,
+    buyerProjectsPosted: buyerProjects.length
+  };
+}
+
 app.get('/api/projects', (req, res) => {
   const publicProjects = projects
     .filter(p => isProjectPublic(p) && (p.status === 'open' || p.status === 'published'))
-    .map(sanitizePublicProject);
+    .map(p => {
+        const stats = getBuyerStats(p.buyerId);
+        return sanitizePublicProject({ ...p, ...stats });
+    });
   res.json(publicProjects);
 });
 
@@ -2165,8 +2212,9 @@ app.get('/api/projects/:id', (req, res) => {
   const isOwner = authUserId && project.buyerId === authUserId;
 
   if (isProjectPublic(project)) {
-    if (isAdmin || isOwner) return res.json(project);
-    return res.json(sanitizePublicProject(project));
+    const stats = getBuyerStats(project.buyerId);
+    if (isAdmin || isOwner) return res.json({ ...project, ...stats });
+    return res.json(sanitizePublicProject({ ...project, ...stats }));
   }
 
   if (isAdmin || isOwner) {
@@ -2305,7 +2353,7 @@ app.patch('/api/orders/:id/extend-time', requireAdmin, async (req, res) => {
 });
 
 // Request Delivery Extension
-app.post('/api/orders/:id/extension-request', requireAuth, rateLimit(20, 60_000), async (req, res) => {
+app.post('/api/orders/:id/extension-request', requireAuth, requireActiveStatus, rateLimit(20, 60_000), async (req, res) => {
   const orderId = req.params.id;
   const order = orderIndex.get(orderId) || orders.find(o => o.id === orderId);
   if (!order) return res.status(404).json({ error: 'Order not found' });
@@ -2368,7 +2416,7 @@ app.post('/api/orders/:id/extension-request', requireAuth, rateLimit(20, 60_000)
 });
 
 // Respond to Extension Request
-app.post('/api/orders/:id/extension-request/respond', requireAuth, rateLimit(20, 60_000), async (req, res) => {
+app.post('/api/orders/:id/extension-request/respond', requireAuth, requireActiveStatus, rateLimit(20, 60_000), async (req, res) => {
   const orderId = req.params.id;
   const order = orderIndex.get(orderId) || orders.find(o => o.id === orderId);
   if (!order) return res.status(404).json({ error: 'Order not found' });
@@ -2445,7 +2493,7 @@ app.post('/api/orders/:id/admin-notes', requireAdmin, async (req, res) => {
 });
 
 // Upload Deliverable Override / File
-app.post('/api/orders/:id/deliverable', requireAuth, async (req, res) => {
+app.post('/api/orders/:id/deliverable', requireAuth, requireActiveStatus, async (req, res) => {
   const orderId = req.params.id;
   if (!tryAcquireOrderLock(orderId, res)) return;
   try {
@@ -2620,7 +2668,7 @@ app.post('/api/orders/:id/deliverable', requireAuth, async (req, res) => {
 });
 
 // Request Revision on Deliverable
-app.post('/api/orders/:id/revision', requireAuth, async (req, res) => {
+app.post('/api/orders/:id/revision', requireAuth, requireActiveStatus, async (req, res) => {
   const orderId = req.params.id;
   if (!tryAcquireOrderLock(orderId, res)) return;
   try {
@@ -2675,7 +2723,7 @@ app.post('/api/orders/:id/revision', requireAuth, async (req, res) => {
 });
 
 // Participant (Buyer or Seller) Dispute Creation Flow
-app.post('/api/orders/:id/dispute', requireAuth, (req, res) => {
+app.post('/api/orders/:id/dispute', requireAuth, requireActiveStatus, (req, res) => {
   const orderId = req.params.id;
   if (!tryAcquireOrderLock(orderId, res)) return;
   try {
@@ -3525,7 +3573,7 @@ app.post('/api/payments/escrow/refund', requireAuth, (req, res) => {
 });
 
 // Gig Cancellation Request
-app.post('/api/orders/:id/cancel-request', requireAuth, rateLimit(20, 60_000), (req, res) => {
+app.post('/api/orders/:id/cancel-request', requireAuth, requireActiveStatus, rateLimit(20, 60_000), (req, res) => {
   const orderId = req.params.id;
   if (!tryAcquireOrderLock(orderId, res)) return;
   try {
@@ -3599,7 +3647,7 @@ app.post('/api/orders/:id/cancel-request', requireAuth, rateLimit(20, 60_000), (
 });
 
 // Respond to Gig Cancellation Request
-app.post('/api/orders/:id/cancel-request/respond', requireAuth, rateLimit(20, 60_000), (req, res) => {
+app.post('/api/orders/:id/cancel-request/respond', requireAuth, requireActiveStatus, rateLimit(20, 60_000), (req, res) => {
   const orderId = req.params.id;
   if (!tryAcquireOrderLock(orderId, res)) return;
   try {
@@ -5666,6 +5714,11 @@ app.post('/api/messages', requireAuth, (req, res) => {
 
   let order = orderIndex.get(orderId);
   if (!order) return res.status(404).json({ error: 'Order not found' });
+  
+  if (caller.status === 'suspended' && !orderId.startsWith('support_admin_')) {
+    return res.status(403).json({ error: 'Action forbidden: Your account is suspended. You can only message Support.' });
+  }
+
   if (!canAccessOrderWorkstream(caller, order)) {
     return res.status(403).json({ error: 'Forbidden: You are not a participant of this Workstream.' });
   }
@@ -5754,10 +5807,9 @@ app.get('/api/admin/messages/threads', requireAdmin, (req, res) => {
   res.json(threads);
 });
 
-app.post('/api/gigs', requireAuth, async (req, res) => {
-  const authUserId = (req as any).authenticatedUserId;
-  const caller = (req as any).authenticatedUser || users.find(u => u.id === authUserId);
-  if (!caller || caller.status !== 'active') return res.status(403).json({ error: 'Account is not active' });
+app.post('/api/gigs', requireAuth, requireActiveStatus, async (req, res) => {
+  const caller = (req as any).authenticatedUser;
+  if (caller.status === 'restricted') return res.status(403).json({ error: 'Restricted: You cannot post new services while your account is restricted.' });
 
   // Enforce Gig Pricing Limits from Site Settings
   const activeSettings = siteSettings.getSettings();
@@ -5808,10 +5860,9 @@ app.post('/api/gigs', requireAuth, async (req, res) => {
   res.json(newGig);
 });
 
-app.post('/api/projects', requireAuth, async (req, res) => {
-  const authUserId = (req as any).authenticatedUserId;
-  const caller = (req as any).authenticatedUser || users.find(u => u.id === authUserId);
-  if (!caller || caller.status !== 'active') return res.status(403).json({ error: 'Account is not active' });
+app.post('/api/projects', requireAuth, requireActiveStatus, async (req, res) => {
+  const caller = (req as any).authenticatedUser;
+  if (caller.status === 'restricted') return res.status(403).json({ error: 'Restricted: You cannot post new projects while your account is restricted.' });
 
   // Enforce Minimum Project Budget
   const activeSettings = siteSettings.getSettings();
@@ -5852,10 +5903,10 @@ app.post('/api/projects', requireAuth, async (req, res) => {
   res.json(newProj);
 });
 
-app.patch('/api/projects/:id/status', requireAuth, (req, res) => {
+app.patch('/api/projects/:id/status', requireAuth, requireActiveStatus, (req, res) => {
   const authUserId = (req as any).authenticatedUserId;
   const caller = (req as any).authenticatedUser || users.find(u => u.id === authUserId);
-  if (!caller || caller.status !== 'active') return res.status(403).json({ error: 'Account is not active' });
+  if (!caller || (caller.status !== 'active' && caller.status !== 'restricted')) return res.status(403).json({ error: 'Account is not active' });
 
   const p = projects.find(proj => proj.id === req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found' });
@@ -6082,7 +6133,7 @@ app.delete('/api/admin/gigs/:id', requireAdmin, (req, res) => {
   res.json({ success: true, id: deleted.id });
 });
 
-app.delete('/api/gigs/:id', requireAuth, (req, res) => {
+app.delete('/api/gigs/:id', requireAuth, requireActiveStatus, (req, res) => {
   const caller = (req as any).authenticatedUser;
   const index = gigs.findIndex(gig => gig.id === req.params.id);
   if (index === -1) return res.status(404).json({ error: 'Gig/Service not found' });
@@ -6108,7 +6159,7 @@ app.delete('/api/gigs/:id', requireAuth, (req, res) => {
   res.json({ success: true, id: deleted.id });
 });
 
-app.patch('/api/gigs/:id', requireAuth, (req, res) => {
+app.patch('/api/gigs/:id', requireAuth, requireActiveStatus, (req, res) => {
   const caller = (req as any).authenticatedUser;
   const g = gigs.find(gig => gig.id === req.params.id);
   if (!g) return res.status(404).json({ error: 'Gig/Service not found' });
@@ -6181,7 +6232,7 @@ app.patch('/api/gigs/:id', requireAuth, (req, res) => {
   res.json(g);
 });
 
-app.patch('/api/gigs/:id/feature', requireAuth, (req, res) => {
+app.patch('/api/gigs/:id/feature', requireAuth, requireActiveStatus, (req, res) => {
   const caller = (req as any).authenticatedUser;
   const g = gigs.find(gig => gig.id === req.params.id);
   if (!g) return res.status(404).json({ error: 'Gig/Service not found' });
@@ -6235,10 +6286,9 @@ app.patch('/api/gigs/:id/feature', requireAuth, (req, res) => {
   res.json(g);
 });
 
-app.post('/api/proposals', requireAuth, (req, res) => {
-  const authUserId = (req as any).authenticatedUserId;
-  const caller = (req as any).authenticatedUser || users.find(u => u.id === authUserId);
-  if (!caller || caller.status !== 'active') return res.status(403).json({ error: 'Account is not active' });
+app.post('/api/proposals', requireAuth, requireActiveStatus, (req, res) => {
+  const caller = (req as any).authenticatedUser;
+  if (caller.status === 'restricted') return res.status(403).json({ error: 'Restricted: You cannot submit new proposals while your account is restricted.' });
 
   const proj = projects.find(p => p.id === req.body.projectId);
   if (!proj) return res.status(404).json({ error: 'Project not found.' });
@@ -6299,7 +6349,7 @@ async function processProposalAccept(req: any, res: any) {
   try {
     const authUserId = (req as any).authenticatedUserId;
     const caller = (req as any).authenticatedUser || users.find((u: any) => u.id === authUserId);
-    if (!caller || caller.status !== 'active') return res.status(403).json({ error: 'Authentication required' });
+    if (!caller || (caller.status !== 'active' && caller.status !== 'restricted')) return res.status(403).json({ error: 'Authentication required' });
     if (proj.buyerId !== caller.id) return res.status(403).json({ error: 'Forbidden: Only the project buyer can accept proposals.' });
     if (proj.status !== 'open' && proj.status !== 'published') {
       return res.status(409).json({ error: `Project is no longer open for proposal acceptance (status: ${proj.status}).` });
@@ -6480,7 +6530,7 @@ async function processProposalDecline(req: any, res: any) {
   try {
     const authUserId = (req as any).authenticatedUserId;
     const caller = (req as any).authenticatedUser || users.find((u: any) => u.id === authUserId);
-    if (!caller || caller.status !== 'active') return res.status(403).json({ error: 'Authentication required' });
+    if (!caller || (caller.status !== 'active' && caller.status !== 'restricted')) return res.status(403).json({ error: 'Authentication required' });
     if (proj.buyerId !== caller.id) return res.status(403).json({ error: 'Forbidden: Only the project buyer can decline proposals.' });
     if (proposal.status !== 'pending') return res.status(409).json({ error: `Proposal is already ${proposal.status}.` });
 
@@ -6515,14 +6565,16 @@ async function processProposalDecline(req: any, res: any) {
   }
 }
 
-app.post('/api/proposals/:id/accept', requireAuth, rateLimit(20, 60_000), async (req, res) => await processProposalAccept(req, res));
-app.post('/api/proposals/:id/decline', requireAuth, rateLimit(20, 60_000), async (req, res) => await processProposalDecline(req, res));
+app.post('/api/proposals/:id/accept', requireAuth, requireActiveStatus, rateLimit(20, 60_000), async (req, res) => await processProposalAccept(req, res));
+app.post('/api/proposals/:id/decline', requireAuth, requireActiveStatus, rateLimit(20, 60_000), async (req, res) => await processProposalDecline(req, res));
 
-app.post('/api/orders', requireAuth, rateLimit(30, 60_000), async (req, res) => {
+app.post('/api/orders', requireAuth, requireActiveStatus, rateLimit(30, 60_000), async (req, res) => {
+  const caller = (req as any).authenticatedUser;
+  if (caller.status === 'restricted') return res.status(403).json({ error: 'Restricted: You cannot purchase new services while your account is restricted.' });
   try {
     const authUserId = (req as any).authenticatedUserId;
     const caller = (req as any).authenticatedUser || users.find(u => u.id === authUserId);
-    if (!caller || caller.status !== 'active') return res.status(403).json({ error: 'Account is not active' });
+    if (!caller || (caller.status !== 'active' && caller.status !== 'restricted')) return res.status(403).json({ error: 'Account is not active' });
 
     const title = typeof req.body?.title === 'string' ? req.body.title.trim() : '';
     if (title.length < 3) return res.status(400).json({ error: 'A valid order title is required.' });
@@ -6831,10 +6883,10 @@ app.get('/api/orders/:id/offers', requireAuth, (req, res) => {
   });
 });
 
-app.post('/api/orders/:id/offers', requireAuth, rateLimit(20, 60_000), (req, res) => {
+app.post('/api/orders/:id/offers', requireAuth, requireActiveStatus, rateLimit(20, 60_000), (req, res) => {
   try {
     const caller = offerCaller(req);
-    if (!caller || caller.status !== 'active') return res.status(403).json({ error: 'Account is not active' });
+    if (!caller || (caller.status !== 'active' && caller.status !== 'restricted')) return res.status(403).json({ error: 'Account is not active' });
     const order = orders.find(o => o.id === req.params.id);
     if (!order) return res.status(404).json({ error: 'Order not found' });
     // Only the order's seller may raise proposals, invoices or deposit requests. Staff cannot raise them on a seller's behalf.
@@ -6983,7 +7035,7 @@ app.post('/api/offers/:id/:action(accept|decline|cancel)', requireAuth, rateLimi
   if (!tryAcquireOrderLock(order.id, res)) return;
   try {
     const caller = offerCaller(req);
-    if (!caller || caller.status !== 'active') return res.status(403).json({ error: 'Account is not active' });
+    if (!caller || (caller.status !== 'active' && caller.status !== 'restricted')) return res.status(403).json({ error: 'Account is not active' });
     if (!canAccessOrderWorkstream(caller, order)) return res.status(403).json({ error: 'Forbidden' });
     if (offer.status !== 'pending') {
       if (offer.status === 'accepted' || offer.status === 'paid') {
@@ -7837,7 +7889,8 @@ export async function createNotification({
   link?: string;
   dedupKey?: string;
   actorId?: string;
-}) {
+  metadata?: any;
+}): Promise<void> {
   if (actorId && actorId === userId) return;
   if (!userId) return;
 

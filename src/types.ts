@@ -179,6 +179,8 @@ export interface Order {
   createdAt: string;
   completedAt?: string;
   dueDate: string;
+  responseDeadline?: string;
+  deadlineApproachingNotified?: boolean;
   requirements?: string;
   deliverables?: string;
   deliverableFiles?: Array<{ id?: string; name: string; url: string; size: string; uploadedAt?: string }>;
@@ -522,6 +524,8 @@ export interface AppNotification {
   read: boolean;
   createdAt: string;
   dedupKey?: string;
+  actorId?: string;
+  metadata?: any;
 }
 
 export type Notification = AppNotification;

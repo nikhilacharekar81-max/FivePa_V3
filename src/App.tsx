@@ -201,6 +201,7 @@ export default function App({ initialPath, initialData }: { initialPath?: string
   const [newGigCat, setNewGigCat] = useState('Development & IT');
   const [newGigDesc, setNewGigDesc] = useState('');
   const [newGigPrice, setNewGigPrice] = useState(450);
+
   const [newGigDays, setNewGigDays] = useState(5);
   const [isOptimizingGig, setIsOptimizingGig] = useState(false);
 
@@ -2260,8 +2261,35 @@ export default function App({ initialPath, initialData }: { initialPath?: string
 
 
 
+      {/* Restricted Account Warning Banner */}
+      {currentUser?.status === 'restricted' && !impersonatedUser && (
+        <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 flex items-center justify-center gap-3 animate-in slide-in-from-top duration-500">
+          <AlertCircle className="w-4 h-4 text-amber-600" />
+          <p className="text-[11px] font-bold text-amber-900">
+            Your account privileges are currently restricted. <button onClick={() => { setSupportSubject('Appeal: Account Restriction'); setIsSupportModalOpen(true); }} className="underline hover:text-amber-700 ml-1 cursor-pointer">Learn more or submit an appeal</button>
+          </p>
+        </div>
+      )}
+
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full min-w-0 mx-auto px-4 sm:px-6 py-8 overflow-x-hidden">
+        
+        {/* GLOBAL SUSPENSION GUARD */}
+        {currentUser?.status === 'suspended' && !impersonatedUser && (
+          <SuspensionScreen 
+            user={currentUser} 
+            navigate={navigate} 
+            onAppeal={() => {
+              setSupportSubject(`Appeal Request: Account Suspension (#${currentUser.id})`);
+              setSupportMessage(`Hello Support,\n\nI am writing to appeal the suspension of my account. I believe this might be an error or I would like more information on how to rectify the situation.\n\nReason cited: ${currentUser.flagReason || 'Policy Violation'}`);
+              setIsSupportModalOpen(true);
+            }} 
+          />
+        )}
+
+        {/* REST OF CONTENT - Only if not suspended */}
+        {(!currentUser || currentUser.status !== 'suspended' || impersonatedUser) && (
+          <>
         
         {/* VIEW: FREELANCER ACTIVITY (/freelance-activity) */}
         {path === '/freelance-activity' && (
@@ -4402,7 +4430,8 @@ export default function App({ initialPath, initialData }: { initialPath?: string
             </form>
           </div>
         )}
-
+        </>
+      )}
       </main>
 
       <WishlistModal 
@@ -4429,6 +4458,16 @@ export default function App({ initialPath, initialData }: { initialPath?: string
           setIsEmailModalOpen(false);
           navigate('/support');
         }} 
+      />
+
+      <SupportModal
+        isOpen={isSupportModalOpen}
+        onClose={() => setIsSupportModalOpen(false)}
+        supportSubject={supportSubject}
+        setSupportSubject={setSupportSubject}
+        supportMessage={supportMessage}
+        setSupportMessage={setSupportMessage}
+        onSubmitTicket={handleCreateSupportTicket}
       />
 
       <UserSwitchModal
@@ -4659,6 +4698,70 @@ export default function App({ initialPath, initialData }: { initialPath?: string
         setEditUserForm={setEditUserForm}
         handleSaveEditUser={handleSaveEditUser}
       />
+    </div>
+  );
+}
+
+function SuspensionScreen({ user, navigate, onAppeal }: { user: UserAccount, navigate: any, onAppeal: () => void }) {
+  return (
+    <div className="flex flex-col items-center justify-center min-h-[70vh] px-6 text-center animate-in fade-in duration-700">
+      <div className="w-24 h-24 bg-rose-50 rounded-3xl flex items-center justify-center mb-8 ring-1 ring-rose-100 shadow-sm">
+        <Shield className="w-12 h-12 text-rose-500" />
+      </div>
+      <h1 className="text-3xl font-bold text-slate-900 mb-4 tracking-tight">Account Under Review</h1>
+      <p className="text-slate-600 max-w-md text-sm leading-relaxed mb-8">
+        Platform administrators have temporarily suspended your access to WorkSphere. 
+        <br />
+        Reason: <span className="font-bold text-slate-900">{user.flagReason || 'Violation of Marketplace Policies'}</span>
+      </p>
+      
+      <div className="bg-white border border-slate-200 rounded-3xl p-8 shadow-xl max-w-md w-full space-y-6">
+        <div className="text-left space-y-3">
+          <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-2">Restricted Actions</h3>
+          <ul className="text-xs text-slate-500 space-y-2">
+            <li className="flex items-center gap-3">
+              <div className="w-1.5 h-1.5 rounded-full bg-rose-400 shrink-0" />
+              <span>Posting new Gigs & Projects</span>
+            </li>
+            <li className="flex items-center gap-3">
+              <div className="w-1.5 h-1.5 rounded-full bg-rose-400 shrink-0" />
+              <span>Submitting new Proposals or Bids</span>
+            </li>
+            <li className="flex items-center gap-3">
+              <div className="w-1.5 h-1.5 rounded-full bg-rose-400 shrink-0" />
+              <span>Initiating withdrawals or fund transfers</span>
+            </li>
+          </ul>
+        </div>
+        
+        <div className="pt-2">
+          <button 
+            onClick={onAppeal}
+            className="w-full py-3.5 bg-slate-900 text-white font-bold rounded-xl hover:bg-slate-800 transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98]"
+          >
+            <Mail className="w-4 h-4 text-emerald-400" />
+            Submit Appeal Request
+          </button>
+        </div>
+      </div>
+      
+      <div className="mt-10 flex flex-col items-center gap-2">
+        <p className="text-xs text-slate-400 font-medium">
+          Review usually takes 24-48 business hours.
+        </p>
+        <button 
+          onClick={() => {
+            if (typeof window !== 'undefined') {
+              localStorage.removeItem('current_user');
+              localStorage.removeItem('user');
+              window.location.href = '/';
+            }
+          }}
+          className="text-xs font-bold text-slate-500 hover:text-slate-700 underline cursor-pointer"
+        >
+          Sign Out
+        </button>
+      </div>
     </div>
   );
 }
