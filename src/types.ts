@@ -89,11 +89,13 @@ export interface Project {
   countryFlag?: string;
   isUrgent?: boolean;
   verifiedBuyer?: boolean;
-  buyerSpent?: string;
+  buyerSpent?: number;
   buyerRating?: number;
   buyerReviewsCount?: number;
-  buyerMemberSince?: string;
   buyerProjectsPosted?: number;
+  buyerCompletedProjects?: number;
+  buyerMemberSince?: string;
+  hireRate?: number | null;
   attachments?: Array<{ name: string; size: string; url?: string }>;
   clarificationQuestions?: Array<any>;
 }
@@ -147,6 +149,21 @@ export interface ProjectOrder extends Order {
   proposalId?: string;
 }
 
+export interface ExtensionRequest {
+  id: string;
+  requestedBy: 'buyer' | 'seller';
+  days: number;
+  reason: string;
+  originalDueDate: string;
+  requestedDueDate: string;
+  requestedAt: string;
+  status: 'pending' | 'approved' | 'rejected';
+  respondedBy?: string;
+  respondedAt?: string;
+  rejectionReason?: string;
+  resultingDueDate?: string;
+}
+
 export interface Order {
   id: string;
   workspaceId?: string;
@@ -166,6 +183,8 @@ export interface Order {
   deliverables?: string;
   deliverableFiles?: Array<{ id?: string; name: string; url: string; size: string; uploadedAt?: string }>;
   revisions?: Array<{ id?: string; requestedAt: string; reason: string; status: string; version?: number; deliveryVersion?: number }>;
+  extensionRequests?: Array<ExtensionRequest>;
+  freeExtensionUsed?: boolean;
   adminNotes?: string;
   isMuted?: boolean;
   escrowProtectionStartDate?: string;

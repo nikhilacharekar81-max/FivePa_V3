@@ -2304,7 +2304,137 @@ app.patch('/api/orders/:id/extend-time', requireAdmin, async (req, res) => {
   res.json({ success: true, order: enrichOrderWithServiceInfo(order), message: sysMsg });
 });
 
+// Request Delivery Extension
+app.post('/api/orders/:id/extension-request', requireAuth, rateLimit(20, 60_000), async (req, res) => {
+  const orderId = req.params.id;
+  const order = orderIndex.get(orderId) || orders.find(o => o.id === orderId);
+  if (!order) return res.status(404).json({ error: 'Order not found' });
+  if (!tryAcquireOrderLock(order.id, res)) return;
+  try {
+    const userId = (req as any).authenticatedUserId;
+    if (userId !== order.sellerId) return res.status(403).json({ error: 'Only the seller can request more time.' });
+    if (['completed', 'cancelled', 'disputed', 'payment_pending'].includes(order.status)) {
+      return res.status(409).json({ error: 'Cannot request an extension for this order.' });
+    }
+    const pending = order.extensionRequests?.find(r => r.status === 'pending');
+    if (pending) return res.json({ request: pending });
+    if (order.freeExtensionUsed) return res.status(409).json({ error: 'Free extension already used.' });
+
+    const { days, reason } = req.body;
+    const numDays = Number(days);
+    if (!Number.isInteger(numDays) || numDays < 1 || numDays > 14) return res.status(400).json({ error: 'Days must be 1-14.' });
+    if (!reason || !reason.trim()) return res.status(400).json({ error: 'Reason required.' });
+
+    const newRequest: ExtensionRequest = {
+      id: 'ext_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+      requestedBy: 'seller',
+      days: numDays,
+      reason: reason.trim(),
+      originalDueDate: order.dueDate,
+      requestedDueDate: new Date(new Date(order.dueDate).getTime() + numDays * 86400000).toISOString().split('T')[0],
+      requestedAt: new Date().toISOString(),
+      status: 'pending'
+    };
+    if (!order.extensionRequests) order.extensionRequests = [];
+    order.extensionRequests.push(newRequest);
+    order.freeExtensionUsed = true;
+    await postgresStore.saveOrders(orders);
+
+    const sysMsg: Message = {
+      id: 'msg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+      orderId: order.id,
+      senderId: 'system',
+      senderName: 'System',
+      text: 'System: The seller requested additional delivery time. Please review the extension request.',
+      timestamp: new Date().toISOString(),
+      type: 'system',
+      metadata: { action: 'time_extension_requested' } as any
+    };
+    recordMessage(sysMsg);
+    await postgresStore.saveMessages(messages);
+    broadcastMessage(sysMsg, order.id);
+
+    createNotification({
+      userId: order.buyerId,
+      type: 'order',
+      title: 'Time Extension Requested',
+      message: `The seller requested ${numDays} more days.`,
+      link: `/workstream/${order.id}`
+    });
+    res.json({ request: newRequest });
+  } finally {
+    releaseOrderLock(orderId);
+  }
+});
+
+// Respond to Extension Request
+app.post('/api/orders/:id/extension-request/respond', requireAuth, rateLimit(20, 60_000), async (req, res) => {
+  const orderId = req.params.id;
+  const order = orderIndex.get(orderId) || orders.find(o => o.id === orderId);
+  if (!order) return res.status(404).json({ error: 'Order not found' });
+  if (!tryAcquireOrderLock(order.id, res)) return;
+  try {
+    const userId = (req as any).authenticatedUserId;
+    if (userId !== order.buyerId) return res.status(403).json({ error: 'Only the buyer can respond.' });
+    const request = order.extensionRequests?.find(r => r.status === 'pending');
+    if (!request) return res.status(404).json({ error: 'No pending request.' });
+
+    const { action, reason } = req.body;
+    if (action === 'approve') {
+      request.status = 'approved';
+      request.respondedBy = userId;
+      request.respondedAt = new Date().toISOString();
+      request.resultingDueDate = request.requestedDueDate;
+      order.dueDate = request.requestedDueDate;
+      await postgresStore.saveOrders(orders);
+      
+      const sysMsg: Message = {
+        id: 'msg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+        orderId: order.id,
+        senderId: 'system',
+        senderName: 'System',
+        text: 'System: The delivery extension was approved. The deadline has been updated.',
+        timestamp: new Date().toISOString(),
+        type: 'system',
+        metadata: { action: 'time_extension_approved' } as any
+      };
+      recordMessage(sysMsg);
+      await postgresStore.saveMessages(messages);
+      broadcastMessage(sysMsg, order.id);
+      createNotification({ userId: order.sellerId, type: 'order', title: 'Extension Approved', message: 'The buyer approved the extension.', link: `/workstream/${order.id}` });
+    } else if (action === 'reject') {
+      if (!reason || !reason.trim()) return res.status(400).json({ error: 'Reason required.' });
+      request.status = 'rejected';
+      request.rejectionReason = reason.trim();
+      request.respondedBy = userId;
+      request.respondedAt = new Date().toISOString();
+      await postgresStore.saveOrders(orders);
+
+      const sysMsg: Message = {
+        id: 'msg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+        orderId: order.id,
+        senderId: 'system',
+        senderName: 'System',
+        text: 'System: The delivery extension was rejected. The original deadline remains unchanged.',
+        timestamp: new Date().toISOString(),
+        type: 'system',
+        metadata: { action: 'time_extension_rejected' } as any
+      };
+      recordMessage(sysMsg);
+      await postgresStore.saveMessages(messages);
+      broadcastMessage(sysMsg, order.id);
+      createNotification({ userId: order.sellerId, type: 'order', title: 'Extension Rejected', message: 'The buyer rejected the extension.', link: `/workstream/${order.id}` });
+    } else {
+      return res.status(400).json({ error: 'Invalid action.' });
+    }
+    res.json({ success: true, order: enrichOrderWithServiceInfo(order) });
+  } finally {
+    releaseOrderLock(orderId);
+  }
+});
+
 // Save Admin Private Notes
+
 app.post('/api/orders/:id/admin-notes', requireAdmin, async (req, res) => {
   const order = orderIndex.get(req.params.id);
   if (!order) return res.status(404).json({ error: 'Order not found' });
@@ -3351,6 +3481,7 @@ app.post('/api/payments/escrow/refund', requireAuth, (req, res) => {
     const isBuyer = userId === order.buyerId;
 
     const isGigOrder = order.orderType === 'gig' || Boolean(order.gigOrderId);
+    if (isGigOrder && isSeller && !isAdmin) return res.status(403).json({ error: 'Sellers must use the cancellation request.' });
     const overdueThresholdHours = isGigOrder ? 24 : 76;
     const isOverdueByThreshold = order.dueDate ? (Date.now() > new Date(order.dueDate).getTime() + overdueThresholdHours * 60 * 60 * 1000) : false;
 

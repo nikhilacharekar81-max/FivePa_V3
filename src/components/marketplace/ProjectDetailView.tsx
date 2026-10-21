@@ -1112,8 +1112,8 @@ export const ProjectDetailView: React.FC<ProjectDetailViewProps> = ({
                     <div className="flex items-center text-amber-400">
                       <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-400" />
                     </div>
-                    <span className="font-bold text-slate-900">{project.buyerRating || 4.9}</span>
-                    <span className="text-slate-400">({project.buyerReviewsCount || 24} reviews)</span>
+                    <span className="font-bold text-slate-900">{project.buyerRating ? project.buyerRating.toFixed(1) : 'No reviews yet'}</span>
+                    {project.buyerReviewsCount ? <span className="text-slate-400">({project.buyerReviewsCount} reviews)</span> : null}
                   </div>
                 </div>
               </div>
@@ -1124,28 +1124,28 @@ export const ProjectDetailView: React.FC<ProjectDetailViewProps> = ({
                   <span className="text-slate-500 flex items-center gap-1.5">
                     <MapPin className="w-3.5 h-3.5 text-slate-400" /> Location
                   </span>
-                  <span className="font-semibold text-slate-900">{project.location || 'United Kingdom'}</span>
+                  <span className="font-semibold text-slate-900">{project.location || 'Not specified'}</span>
                 </div>
 
                 <div className="flex items-center justify-between">
                   <span className="text-slate-500 flex items-center gap-1.5">
                     <Briefcase className="w-3.5 h-3.5 text-slate-400" /> Projects Posted
                   </span>
-                  <span className="font-semibold text-slate-900">{project.buyerProjectsPosted || 18} projects</span>
+                  <span className="font-semibold text-slate-900">{project.buyerProjectsPosted !== undefined ? `${project.buyerProjectsPosted} projects` : 'No projects yet'}</span>
                 </div>
 
                 <div className="flex items-center justify-between">
                   <span className="text-slate-500 flex items-center gap-1.5">
                     <DollarSign className="w-3.5 h-3.5 text-slate-400" /> Total Spend
                   </span>
-                  <span className="font-bold text-emerald-600">{project.buyerSpent || '$42,500+'}</span>
+                  <span className="font-bold text-emerald-600">{project.buyerSpent !== undefined ? `$${project.buyerSpent.toLocaleString()}` : 'Not available'}</span>
                 </div>
 
                 <div className="flex items-center justify-between">
                   <span className="text-slate-500 flex items-center gap-1.5">
                     <Calendar className="w-3.5 h-3.5 text-slate-400" /> Member Since
                   </span>
-                  <span className="font-semibold text-slate-900">{project.buyerMemberSince || 'Jan 2021'}</span>
+                  <span className="font-semibold text-slate-900">{project.buyerMemberSince || 'New buyer'}</span>
                 </div>
 
                 <div className="flex items-center justify-between pt-1">

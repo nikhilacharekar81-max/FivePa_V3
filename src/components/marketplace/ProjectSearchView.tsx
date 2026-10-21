@@ -801,12 +801,14 @@ export const ProjectSearchView: React.FC<ProjectSearchViewProps> = ({
                                   <span>Verified</span>
                                 </span>
                               )}
-                              {proj.buyerRating && (
+                              {proj.buyerRating ? (
                                 <span className="text-[11px] text-slate-500 font-medium flex items-center gap-1">
                                   <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
-                                  <span className="font-bold text-slate-800">{proj.buyerRating}</span>
-                                  {proj.buyerSpent && <span>• {proj.buyerSpent} spent</span>}
+                                  <span className="font-bold text-slate-800">{proj.buyerRating.toFixed(1)}</span>
+                                  {proj.buyerSpent !== undefined ? <span>• ${proj.buyerSpent.toLocaleString()} spent</span> : null}
                                 </span>
+                              ) : (
+                                <span className="text-[11px] text-slate-500 font-medium">New buyer</span>
                               )}
                               <span className="text-[11px] text-slate-400 font-medium">• {proj.createdAt}</span>
                             </div>
