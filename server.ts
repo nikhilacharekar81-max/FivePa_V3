@@ -1499,8 +1499,16 @@ function registerAuditLog(log: AuditLog) {
 export function syncIndexes() {
   orderIndex.clear();
   messageIndex.clear();
+  clearingEarnings.length = 0;
   for (const o of orders) {
     registerOrder(o);
+    if (Array.isArray((o as any).clearingEarnings)) {
+      for (const ce of (o as any).clearingEarnings) {
+        if (!clearingEarnings.some(e => e.orderId === ce.orderId)) {
+          clearingEarnings.push(ce);
+        }
+      }
+    }
   }
   for (const m of messages) {
     registerMessage(m);
@@ -1985,12 +1993,14 @@ export function releaseOrderFunds(order: Order, actor: string, reason: string, a
     seller.earned = (seller.earned || 0) + result.freelancerNet;
     seller.completedJobs = (seller.completedJobs || 0) + 1;
     if (order.orderType === 'gig' || order.gigOrderId) {
-      clearingEarnings.push({
+      const entry = {
         orderId: order.id,
         sellerId: order.sellerId,
         amount: result.freelancerNet,
         clearsAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString()
-      });
+      };
+      clearingEarnings.push(entry);
+      (order as any).clearingEarnings = [...((order as any).clearingEarnings || []), entry];
     }
   }
   syncUserBalances();

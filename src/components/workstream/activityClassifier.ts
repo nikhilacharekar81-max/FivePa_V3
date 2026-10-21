@@ -763,7 +763,8 @@ export function classifyActivityEvent(msg: WorkstreamMessage): ClassifiedEvent {
   if (
     action === 'GIG_CANCELLATION_ACCEPTED' ||
     action === 'GIG_CANCELLATION_AUTO_CANCELLED' ||
-    /cancellation accepted|auto-cancelled/i.test(text)
+    action === 'gig_very_late_cancelled' ||
+    /cancellation accepted|auto-cancelled|very-late cancellation/i.test(text)
   ) {
     return {
       category: 'cancellation',
