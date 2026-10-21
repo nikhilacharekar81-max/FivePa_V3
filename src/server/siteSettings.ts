@@ -58,6 +58,7 @@ export interface GigsProjectsOrdersSettings {
   autoCompleteDeliveredDays: number; // default 3 days
   autoCompleteDeliveredEnabled: boolean; // default true (toggle auto-accept on/off with one setting)
   allowBuyerCancellationRequests: boolean;
+  featuredGigFee: number; // Default 10
 }
 
 export interface WalletsWithdrawalsSettings {
@@ -172,7 +173,8 @@ export const DEFAULT_SITE_SETTINGS: SiteSettingsState = {
     maxActiveOrdersPerFreelancer: 0, // 0 for unlimited (allows high-velocity sellers and buyers without artificial caps)
     autoCompleteDeliveredDays: 3,
     autoCompleteDeliveredEnabled: true,
-    allowBuyerCancellationRequests: true
+    allowBuyerCancellationRequests: true,
+    featuredGigFee: 10
   },
   wallets: {
     minimumWithdrawalAmount: 50,
@@ -227,7 +229,6 @@ export class SiteSettingsService {
   constructor() {
     this.settings = JSON.parse(JSON.stringify(DEFAULT_SITE_SETTINGS));
     this.loadFromDisk();
-    this.seedInitialHistory();
     this.syncFeesToLedger();
   }
 
@@ -262,29 +263,6 @@ export class SiteSettingsService {
     } catch (e) {
       console.error('[SiteSettingsService] Failed to save site settings:', e);
     }
-  }
-
-  private seedInitialHistory() {
-    this.history.push({
-      id: 'SET-HIST-101',
-      timestamp: '2026-10-01 10:00:00',
-      section: 'Platform Commission',
-      settingName: 'Platform Commission (%)',
-      oldValue: 'Initial Configuration',
-      newValue: `${DEFAULT_FEE_CONFIG.commissionPercent}%`,
-      actor: 'System Setup',
-      notes: `Standard ${DEFAULT_FEE_CONFIG.commissionPercent}% platform take rate initialized with 14-day escrow protection.`
-    });
-    this.history.push({
-      id: 'SET-HIST-102',
-      timestamp: '2026-10-05 09:30:00',
-      section: 'Wallets & Withdrawals',
-      settingName: 'Manual Review Threshold',
-      oldValue: '$1,000.00',
-      newValue: '$500.00',
-      actor: 'Admin Chief',
-      notes: 'Tightened payout compliance threshold to $500 for enhanced risk management.'
-    });
   }
 
   public getSettings(): SiteSettingsState {

@@ -57,6 +57,7 @@ export interface Gig {
   image: string;
   status: 'published' | 'draft' | 'suspended' | 'paused' | 'pending' | 'declined';
   featured: boolean;
+  featuredUntil?: string;
   extras?: GigExtra[];
   moderationStatus?: 'approved' | 'flagged' | 'rejected' | 'pending';
   moderationNotes?: string;
@@ -192,6 +193,30 @@ export interface Order {
   totalReleased?: number;
   hasPaidInvoice?: boolean;
   type?: 'gig' | 'project';
+  cancellationRequest?: {
+    requestedBy: 'buyer' | 'seller';
+    requesterId: string;
+    reason: string;
+    details?: string;
+    requestedAt: string;
+    respondBy: string;
+    status: 'pending' | 'accepted' | 'rejected' | 'auto_cancelled';
+    respondedBy?: string;
+    respondedAt?: string;
+    rejectionReason?: string;
+  };
+  cancellationHistory?: Array<{
+    requestedBy: 'buyer' | 'seller';
+    requesterId: string;
+    reason: string;
+    details?: string;
+    requestedAt: string;
+    status: string;
+    respondedBy?: string;
+    respondedAt?: string;
+    rejectionReason?: string;
+  }>;
+  cancellationType?: 'very_late' | 'mutual' | 'auto';
 }
 
 export interface UserAccount {

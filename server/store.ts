@@ -5,16 +5,9 @@ import { randomBytes } from 'crypto';
 import bcrypt from 'bcryptjs';
 import { financeLedger } from '../src/server/financeLedger.js';
 import { siteSettings, DEFAULT_SITE_SETTINGS } from '../src/server/siteSettings.js';
+import { workspaceService } from '../src/server/workspaceService.js';
+import { paymentGatewayManager } from '../src/server/paymentGateways.js';
 import { OrderFeeBreakdown } from '../src/shared/fees.js';
-import {
-  SEED_USERS,
-  SEED_GIGS,
-  SEED_PROJECTS,
-  SEED_PROPOSALS,
-  SEED_ORDERS,
-  SEED_REVIEWS,
-  SEED_MESSAGES
-} from '../src/data/completeSeedDataset.js';
 
 export { financeLedger, siteSettings, DEFAULT_SITE_SETTINGS };
 
@@ -114,20 +107,14 @@ function seedPasswordHashFor(role: string): string {
   return bcrypt.hashSync('password123', 10);
 }
 
-// In-Memory Data Collections
-export let users: User[] = SEED_USERS.map(u => ({
-  ...u,
-  password: seedPasswordHashFor(u.role),
-  sessionVersion: u.sessionVersion || 1,
-  knownDevices: u.knownDevices || ['dev_default_session']
-}));
-
-export let gigs: Gig[] = [...SEED_GIGS];
-export let orders: Order[] = [...SEED_ORDERS];
-export let projects: Project[] = [...SEED_PROJECTS];
-export let proposals: Proposal[] = [...SEED_PROPOSALS];
-export let reviews: Review[] = [...SEED_REVIEWS];
-export let messages: Message[] = [...SEED_MESSAGES];
+// In-Memory Data Collections (capable of starting clean with zero records)
+export let users: User[] = [];
+export let gigs: Gig[] = [];
+export let orders: Order[] = [];
+export let projects: Project[] = [];
+export let proposals: Proposal[] = [];
+export let reviews: Review[] = [];
+export let messages: Message[] = [];
 
 export let disputes: Dispute[] = [];
 export let refunds: Refund[] = [];
@@ -349,31 +336,6 @@ export class HybridPostgresStore implements StoreInterface {
 
 export const store: StoreInterface = new HybridPostgresStore();
 
-export function getReviewWindowDays(): number {
-  if (process.env.REVIEW_WINDOW_DAYS !== undefined) {
-    const parsed = Number(process.env.REVIEW_WINDOW_DAYS);
-    if (!isNaN(parsed) && parsed >= 0) return parsed;
-  }
-  const settings = siteSettings.getSettings();
-  if (typeof settings.marketplace?.autoCompleteDeliveredDays === 'number') {
-    return settings.marketplace.autoCompleteDeliveredDays;
-  }
-  if (typeof siteFeeSettings.autoCompleteDeliveredDays === 'number') {
-    return siteFeeSettings.autoCompleteDeliveredDays;
-  }
-  return 3;
-}
-
-export function isAutoAcceptEnabled(): boolean {
-  if (process.env.AUTO_ACCEPT_ENABLED !== undefined) {
-    const v = process.env.AUTO_ACCEPT_ENABLED.trim().toLowerCase();
-    if (v === 'false' || v === '0' || v === 'off' || v === 'no') return false;
-  }
-  const settings = siteSettings.getSettings();
-  if (settings.marketplace?.autoCompleteDeliveredEnabled === false) return false;
-  if (siteFeeSettings.autoCompleteDeliveredEnabled === false) return false;
-  return getReviewWindowDays() > 0;
-}
 
 export function ensureDataDirectory() {
   if (!fs.existsSync(DATA_DIR)) {
@@ -418,9 +380,6 @@ export function saveWorkstreamUploadIndex() {
   return Promise.all(promises);
 }
 
-export function handleCorruption(filePath: string, error: any) {
-  // Deprecated
-}
 
 export function loadInitialOrdersAndMessages() {
   // Deprecated: Data is now loaded from PostgreSQL via hydrateStoreFromPostgres()
@@ -436,27 +395,14 @@ export function syncUserBalances() {
 export function ensureWallet(userId: string) {
   const u = users.find(x => x.id === userId);
   if (!u || u.role === 'admin' || u.role === 'super_admin') return;
-  const isFreelancer = gigs.some(g => g.freelancerId === u.id) || orders.some(o => o.sellerId === u.id) || u.role === 'freelancer';
+  const isFreelancer = gigs.some(g => g.freelancerId === u.id) || orders.some(o => o.sellerId === u.id) || u.role === 'freelancer' || u.role === 'seller';
   financeLedger.ensureWallet({ userId: u.id, name: u.name, email: u.email, role: isFreelancer ? 'freelancer' : 'buyer' });
 }
 
-export function pushSystemMessage(orderId: string, text: string) {
-  const msg: Message = {
-    id: `msg_sys_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-    orderId,
-    senderId: 'system',
-    senderName: 'WorkSphere System',
-    text,
-    timestamp: new Date().toISOString(),
-    type: 'system'
-  };
-  store.addMessage(msg);
-  return msg;
-}
 
 export async function hydrateStoreFromPostgres() {
-  postgresStore.isHydrated = true;
   if (!isPostgresEnabled()) {
+    postgresStore.isHydrated = true;
     console.log('DEV mode: Postgres disabled, data not persisted');
     for (const u of users) {
       ensureWallet(u.id);
@@ -470,129 +416,53 @@ export async function hydrateStoreFromPostgres() {
   } catch (err) {
     if (isPostgresEnabled()) {
       console.error('CRITICAL: Database unreachable or migrations failed at startup:', err);
-      console.error("Hydration failed, continuing anyway");;
+      throw err;
     }
   }
 
-  let initialized = false;
+  console.log('[PostgresStore] Loading records from Postgres into memory...');
   try {
-    initialized = await postgresStore.isInitialized();
-  } catch (err) {
-    if (isPostgresEnabled()) {
-      console.error('CRITICAL: Database is unreachable when checking initialization status:', err);
-      console.error("Hydration failed, continuing anyway");;
+    const loadedUsers = await postgresStore.listUsers();
+    if (loadedUsers) {
+      users.length = 0;
+      users.push(...loadedUsers);
     }
-  }
 
-  if (!initialized) {
-    console.log('[PostgresStore] Database is empty. Seeding initial dataset...');
-    try {
-      postgresStore.isHydrated = true;
-      await postgresStore.saveUsers(users);
-      await postgresStore.saveGigs(gigs);
-      await postgresStore.saveProjects(projects);
-      await postgresStore.saveProposals(proposals);
-      await postgresStore.saveOrders(orders);
-      await postgresStore.saveMessages(messages);
-      await postgresStore.saveReviews(reviews);
-      await postgresStore.saveWorkspaces([]);
-      await postgresStore.saveOffers([]);
-      await postgresStore.saveCustomInvoices([]);
-      await postgresStore.saveDisputes([]);
-      await postgresStore.saveRefunds([]);
-      await postgresStore.savePayouts([]);
-      await postgresStore.saveSupportTickets([]);
-      await postgresStore.saveAuditLogs([]);
-      await postgresStore.saveUserEmails([]);
-      await postgresStore.saveSiteSettings(siteFeeSettings);
-      await postgresStore.savePaymentGateways({});
-      await postgresStore.saveLedgerState(financeLedger.getSerializableState());
-      await postgresStore.markInitialized();
-      console.log('[PostgresStore] Seeding completed successfully.');
-    } catch (seedErr) {
-      postgresStore.isHydrated = false;
-      console.error('CRITICAL: Failed to seed database:', seedErr);
-      console.error("Hydration failed, continuing anyway");;
+    const loadedGigs = await postgresStore.listGigs();
+    if (loadedGigs) {
+      gigs.length = 0;
+      gigs.push(...loadedGigs);
     }
-  } else {
-    console.log('[PostgresStore] Loading all entities from Postgres into memory...');
-    try {
-      const loadedUsers = await postgresStore.listUsers();
-      if (loadedUsers) {
-        const ids = new Set(loadedUsers.map(u => u.id));
-        const missing = SEED_USERS.filter(u => !ids.has(u.id)).map(u => ({
-          ...u,
-          password: (u.role === 'super_admin' || u.role === 'admin')
-            ? bcrypt.hashSync('adminpassword123', 10)
-            : bcrypt.hashSync('password123', 10),
-          sessionVersion: u.sessionVersion || 1,
-          knownDevices: u.knownDevices || ['dev_default_session']
-        }));
-        users.length = 0;
-        users.push(...loadedUsers, ...missing);
-        for (const u of users) {
-          if (!u.password) {
-            u.password = (u.role === 'super_admin' || u.role === 'admin')
-              ? bcrypt.hashSync('adminpassword123', 10)
-              : bcrypt.hashSync('password123', 10);
-          }
-        }
-        await postgresStore.saveUsers(users);
-      }
 
-      const loadedGigs = await postgresStore.listGigs();
-      if (loadedGigs) {
-        const ids = new Set(loadedGigs.map(g => g.id));
-        const missing = SEED_GIGS.filter(g => !ids.has(g.id));
-        gigs.length = 0;
-        gigs.push(...loadedGigs, ...missing);
-        if (missing.length > 0) await postgresStore.saveGigs(gigs);
-      }
+    const loadedProjects = await postgresStore.listProjects();
+    if (loadedProjects) {
+      projects.length = 0;
+      projects.push(...loadedProjects);
+    }
 
-      const loadedProjects = await postgresStore.listProjects();
-      if (loadedProjects) {
-        const ids = new Set(loadedProjects.map(p => p.id));
-        const missing = SEED_PROJECTS.filter(p => !ids.has(p.id));
-        projects.length = 0;
-        projects.push(...loadedProjects, ...missing);
-        if (missing.length > 0) await postgresStore.saveProjects(projects);
-      }
+    const loadedProposals = await postgresStore.listProposals();
+    if (loadedProposals) {
+      proposals.length = 0;
+      proposals.push(...loadedProposals);
+    }
 
-      const loadedProposals = await postgresStore.listProposals();
-      if (loadedProposals) {
-        const ids = new Set(loadedProposals.map(p => p.id));
-        const missing = SEED_PROPOSALS.filter(p => !ids.has(p.id));
-        proposals.length = 0;
-        proposals.push(...loadedProposals, ...missing);
-        if (missing.length > 0) await postgresStore.saveProposals(proposals);
-      }
+    const loadedOrders = await postgresStore.listOrders();
+    if (loadedOrders) {
+      orders.length = 0;
+      orders.push(...loadedOrders);
+    }
 
-      const loadedOrders = await postgresStore.listOrders();
-      if (loadedOrders) {
-        const ids = new Set(loadedOrders.map(o => o.id));
-        const missing = SEED_ORDERS.filter(o => !ids.has(o.id));
-        orders.length = 0;
-        orders.push(...loadedOrders, ...missing);
-        if (missing.length > 0) await postgresStore.saveOrders(orders);
-      }
+    const loadedMessages = await postgresStore.listMessages();
+    if (loadedMessages) {
+      messages.length = 0;
+      messages.push(...loadedMessages);
+    }
 
-      const loadedMessages = await postgresStore.listMessages();
-      if (loadedMessages) {
-        const ids = new Set(loadedMessages.map(m => m.id));
-        const missing = SEED_MESSAGES.filter(m => !ids.has(m.id));
-        messages.length = 0;
-        messages.push(...loadedMessages, ...missing);
-        if (missing.length > 0) await postgresStore.saveMessages(messages);
-      }
-
-      const loadedReviews = await postgresStore.listReviews();
-      if (loadedReviews) {
-        const ids = new Set(loadedReviews.map(r => r.id));
-        const missing = SEED_REVIEWS.filter(r => !ids.has(r.id));
-        reviews.length = 0;
-        reviews.push(...loadedReviews, ...missing);
-        if (missing.length > 0) await postgresStore.saveReviews(reviews);
-      }
+    const loadedReviews = await postgresStore.listReviews();
+    if (loadedReviews) {
+      reviews.length = 0;
+      reviews.push(...loadedReviews);
+    }
 
       const loadedDisputes = await postgresStore.listDisputes();
       if (loadedDisputes.length > 0) { disputes.length = 0; disputes.push(...loadedDisputes); }
@@ -621,7 +491,28 @@ export async function hydrateStoreFromPostgres() {
       const loadedSettings = await postgresStore.loadSiteSettings();
       if (loadedSettings) {
         Object.assign(siteFeeSettings, loadedSettings);
+        siteSettings.loadFromState(loadedSettings);
       }
+
+      const loadedWorkspaces = await postgresStore.listWorkspaces();
+      if (loadedWorkspaces && loadedWorkspaces.length > 0) {
+        workspaceService.loadFromList(loadedWorkspaces);
+      }
+
+      const loadedOffers = await postgresStore.listOffers();
+      if (loadedOffers && loadedOffers.length > 0) {
+        workstreamOffers.length = 0;
+        workstreamOffers.push(...loadedOffers);
+      }
+
+      const loadedInvoices = await postgresStore.listCustomInvoices();
+      if (loadedInvoices && loadedInvoices.length > 0) {
+        customInvoices.length = 0;
+        customInvoices.push(...loadedInvoices);
+      }
+
+      const loadedGateways = await postgresStore.loadPaymentGateways();
+      if (loadedGateways) paymentGatewayManager.loadFromState(loadedGateways);
 
       const loadedLedger = await postgresStore.loadLedgerState();
       if (loadedLedger) {
@@ -631,15 +522,43 @@ export async function hydrateStoreFromPostgres() {
       const loadedNotifs = await postgresStore.listAllNotifications();
       if (loadedNotifs && loadedNotifs.length > 0) { notifications.length = 0; notifications.push(...loadedNotifs); }
 
+      postgresStore.isHydrated = true;
       console.log('[PostgresStore] Successfully loaded all entities into memory.');
     } catch (loadErr) {
       console.error('CRITICAL: Failed to load entities from database:', loadErr);
-      console.error("Hydration failed, continuing anyway");;
+      throw loadErr;
     }
-  }
 
   for (const u of users) {
     ensureWallet(u.id);
   }
   syncUserBalances();
+}
+
+export async function cleanAllStoreData() {
+  users.length = 0;
+  gigs.length = 0;
+  orders.length = 0;
+  projects.length = 0;
+  proposals.length = 0;
+  reviews.length = 0;
+  messages.length = 0;
+  disputes.length = 0;
+  refunds.length = 0;
+  payouts.length = 0;
+  customInvoices.length = 0;
+  workstreamOffers.length = 0;
+  notifications.length = 0;
+  supportTickets.length = 0;
+  auditLogs.length = 0;
+  userEmails.length = 0;
+  for (const k of Object.keys(workstreamUploadIndex)) {
+    delete workstreamUploadIndex[k];
+  }
+  requestKeyCache.clear();
+  releaseCompletedOrders.clear();
+  financeLedger.resetToCleanState();
+
+  await postgresStore.cleanAllData();
+  console.log('[Store] Cleaned all demo/runtime data from memory and PostgreSQL.');
 }

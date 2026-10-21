@@ -219,7 +219,6 @@ export class FinanceLedgerEngine {
   private maximumWithdrawalAmount: number = 5000;
 
   constructor() {
-    this.seedInitialFinancialData();
     this.loadFromDisk();
   }
 
@@ -321,35 +320,7 @@ export class FinanceLedgerEngine {
     return result;
   }
 
-  private seedInitialFinancialData() {
-    if (this.wallets.size > 0) return;
-    const initialUsers = [
-      { userId: 'user_1', name: 'Alex Rivera', email: 'alex@example.com', role: 'buyer' as const },
-      { userId: 'user_2', name: 'Elena Rostova', email: 'elena@example.com', role: 'freelancer' as const },
-      { userId: 'user_3', name: 'Marcus Chen', email: 'marcus@example.com', role: 'freelancer' as const },
-      { userId: 'user_4', name: 'Sarah Jenkins', email: 'sarah@example.com', role: 'freelancer' as const }
-    ];
-    const now = nowStr();
-    for (const u of initialUsers) {
-      if (!this.wallets.has(u.userId)) {
-        this.wallets.set(u.userId, {
-          id: `WAL-${u.userId.toUpperCase()}`,
-          userId: u.userId,
-          userName: u.name,
-          userEmail: u.email,
-          userRole: u.role,
-          currency: DEFAULT_CURRENCY,
-          availableBalance: 0,
-          pendingIncoming: 0,
-          fundsOnHold: 0,
-          pendingWithdrawals: 0,
-          status: 'active',
-          lastActivityAt: now,
-          createdAt: now
-        });
-      }
-    }
-  }
+
 
   // ----- core posting ------------------------------------------------------
   // Posts a balanced journal and applies the resulting wallet-balance effects atomically.
@@ -1293,6 +1264,7 @@ export class FinanceLedgerEngine {
     try {
       const state = this.getSerializableState();
       import('../../server/db/postgresStore.js').then(({ postgresStore }) => {
+        if (!postgresStore.isHydrated) return;
         postgresStore.saveLedgerState(state).catch(err => {
           console.error('[FinanceLedger] Failed to persist state to PostgreSQL:', err);
         });
@@ -1339,11 +1311,7 @@ export class FinanceLedgerEngine {
     this.escrows.clear();
     this.payouts.clear();
     this.opResults.clear();
-    for (const w of this.wallets.values()) {
-      w.availableBalance = 0;
-      w.fundsOnHold = 0;
-      w.pendingWithdrawals = 0;
-    }
+    this.wallets.clear();
     this.saveToDisk();
   }
 }

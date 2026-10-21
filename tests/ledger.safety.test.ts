@@ -13,14 +13,23 @@ function throws(fn: () => unknown, name: string, contains?: string) {
 const bal = (e: FinanceLedgerEngine, id: string) => e.getWalletBalance(id)!;
 const invariantsOk = (e: FinanceLedgerEngine) => e.getInvariants().every(i => i.ok) && e.getFinancialOverview().trialBalanceInBalance;
 
+function makeEngine(): FinanceLedgerEngine {
+  const eng = new FinanceLedgerEngine();
+  eng.ensureWallet({ userId: 'user_1', name: 'Alex Rivera', email: 'alex@example.com', role: 'buyer' });
+  eng.ensureWallet({ userId: 'user_2', name: 'Elena Rostova', email: 'elena@example.com', role: 'freelancer' });
+  eng.ensureWallet({ userId: 'user_3', name: 'Marcus Chen', email: 'marcus@example.com', role: 'freelancer' });
+  eng.ensureWallet({ userId: 'user_4', name: 'Sarah Jenkins', email: 'sarah@example.com', role: 'freelancer' });
+  return eng;
+}
+
 function run() {
   // --- seed state ---
-  let e = new FinanceLedgerEngine();
+  let e = makeEngine();
   assert(e.getWallets().every(w => w.isReconciled), 'Seed wallets all reconcile with the ledger');
   assert(invariantsOk(e), 'Seed invariants hold (escrow, holds, payouts, trial balance)');
 
   // --- double release ---
-  e = new FinanceLedgerEngine();
+  e = makeEngine();
   e.creditDeposit({ userId: 'user_2', amount: 1000, reference: 'TEST-DEP', idempotencyKey: 'DEP-SAFETY-1', actor: 'a' });
   e.fundEscrow({ orderId: 'o1', orderTitle: 't', amount: 100, buyerId: 'user_2', sellerId: 'user_3', actor: 'a' });
   e.releaseEscrow({ orderId: 'o1', actor: 'a' });
@@ -32,7 +41,7 @@ function run() {
   assert(invariantsOk(e), 'Invariants hold after release attempts');
 
   // --- double refund / refund then release ---
-  e = new FinanceLedgerEngine();
+  e = makeEngine();
   e.creditDeposit({ userId: 'user_2', amount: 1000, reference: 'TEST-DEP', idempotencyKey: 'DEP-SAFETY-2', actor: 'a' });
   const b0 = bal(e, 'user_2');
   e.fundEscrow({ orderId: 'o2', orderTitle: 't', amount: 100, buyerId: 'user_2', sellerId: 'user_3', actor: 'a' });
@@ -43,7 +52,7 @@ function run() {
   assert(invariantsOk(e), 'Invariants hold after refund attempts');
 
   // --- refund cap and partial split ---
-  e = new FinanceLedgerEngine();
+  e = makeEngine();
   e.creditDeposit({ userId: 'user_2', amount: 1000, reference: 'TEST-DEP', idempotencyKey: 'DEP-SAFETY-3', actor: 'a' });
   e.fundEscrow({ orderId: 'o3', orderTitle: 't', amount: 200, buyerId: 'user_2', sellerId: 'user_3', actor: 'a' });
   throws(() => e.refundEscrow({ orderId: 'o3', amount: 250, reason: 'over refund', actor: 'a' }), 'Refund above escrow held is rejected', 'exceeds');
@@ -53,7 +62,7 @@ function run() {
   assert(invariantsOk(e), 'Invariants hold after split');
 
   // --- funding rules ---
-  e = new FinanceLedgerEngine();
+  e = makeEngine();
   throws(() => e.fundEscrow({ orderId: 'o4', orderTitle: 't', amount: 999999, buyerId: 'user_2', sellerId: 'user_3', actor: 'a' }), 'Order larger than wallet balance is rejected', 'Insufficient wallet balance');
   assert(!e.getEscrow('o4'), 'No escrow created for a rejected order');
   throws(() => e.fundEscrow({ orderId: 'o5', orderTitle: 't', amount: 50, buyerId: 'user_2', sellerId: 'user_2', actor: 'a' }), 'Self-dealing order is rejected', 'themselves');
@@ -67,14 +76,14 @@ function run() {
   throws(() => e.releaseEscrow({ orderId: 'never_funded', actor: 'a' }), 'Releasing an order that was never funded is rejected', 'No funded escrow');
 
   // --- NaN adjustment must not corrupt wallets ---
-  e = new FinanceLedgerEngine();
+  e = makeEngine();
   const before = bal(e, 'user_3');
   throws(() => e.executeAdministrativeAdjustment({ userId: 'user_3', amount: NaN, direction: 'credit_user', category: 'goodwill', reason: 'bad amount test', actor: 'a' }), 'NaN adjustment is rejected');
   assert(bal(e, 'user_3') === before && Number.isFinite(bal(e, 'user_3')), 'Wallet unchanged after rejected adjustment');
   throws(() => e.executeAdministrativeAdjustment({ userId: 'user_admin', amount: 10, direction: 'credit_user', category: 'goodwill', reason: 'admin wallet test', actor: 'a' }), 'Admin wallet cannot be adjusted');
 
   // --- freezes are enforced ---
-  e = new FinanceLedgerEngine();
+  e = makeEngine();
   e.creditDeposit({ userId: 'user_2', amount: 1000, reference: 'TEST-DEP', idempotencyKey: 'DEP-SAFETY-5', actor: 'a' });
   e.fundEscrow({ orderId: 'f1', orderTitle: 't', amount: 100, buyerId: 'user_2', sellerId: 'user_3', actor: 'a' });
   e.freezeWallet('user_3', 'fraud investigation', 'a');
@@ -85,7 +94,7 @@ function run() {
   throws(() => e.creditDeposit({ userId: 'user_2', amount: 10, reference: 'r', idempotencyKey: 'k1', actor: 'a' }), 'Deposit into a frozen wallet is blocked', 'frozen');
 
   // --- payouts ---
-  e = new FinanceLedgerEngine();
+  e = makeEngine();
   e.creditDeposit({ userId: 'user_1', amount: 3675, reference: 'SEED-DEP-USER1', idempotencyKey: 'SEED-U1', actor: 'a' });
   const e0 = bal(e, 'user_1'); // 3675
   throws(() => e.requestPayout({ payoutId: 'p0', freelancerId: 'user_1', amount: 10, method: 'UPI', accountDetails: 'x@upi', actor: 'a' }), 'Withdrawal below minimum is rejected', 'Minimum withdrawal');
@@ -114,7 +123,7 @@ function run() {
   throws(() => e.requestPayout({ payoutId: 'p4', freelancerId: 'user_1', amount: 100, method: 'UPI', accountDetails: 'elena@upi', actor: 'a' }), 'Restricted wallet cannot withdraw', 'restricted');
 
   // --- reversal rules ---
-  e = new FinanceLedgerEngine();
+  e = makeEngine();
   e.creditDeposit({ userId: 'user_2', amount: 1000, reference: 'TEST-DEP', idempotencyKey: 'DEP-SAFETY-6', actor: 'a' });
   e.fundEscrow({ orderId: 'r1', orderTitle: 't', amount: 100, buyerId: 'user_2', sellerId: 'user_3', actor: 'a' });
   const fundJournal = e.getJournals().find(j => j.eventType === 'ORDER_ESCROW_FUNDED' && j.entries.some(x => x.orderId === 'r1'))!;
@@ -128,7 +137,7 @@ function run() {
   assert(invariantsOk(e), 'Invariants hold after reversals');
 
   // --- commission follows settings ---
-  e = new FinanceLedgerEngine();
+  e = makeEngine();
   e.creditDeposit({ userId: 'user_2', amount: 1000, reference: 'TEST-DEP', idempotencyKey: 'DEP-SAFETY-7', actor: 'a' });
   e.setPlatformCommissionRate(15);
   e.fundEscrow({ orderId: 'c1', orderTitle: 't', amount: 200, buyerId: 'user_2', sellerId: 'user_3', actor: 'a' });
@@ -136,7 +145,7 @@ function run() {
   assert(rel.platformFee === 30 && rel.freelancerNet === 170, 'Release honours the configured 15% commission');
 
   // --- idempotency ---
-  e = new FinanceLedgerEngine();
+  e = makeEngine();
   const w0 = bal(e, 'user_3');
   e.creditDeposit({ userId: 'user_3', amount: 75, reference: 'gw-1', idempotencyKey: 'evt_123', actor: 'gw' });
   const again = e.creditDeposit({ userId: 'user_3', amount: 75, reference: 'gw-1', idempotencyKey: 'evt_123', actor: 'gw' });
@@ -148,7 +157,7 @@ function run() {
   assert(r1.journal.id === r2.journal.id, 'Same requestKey returns the original result without re-applying');
 
   // --- CSV formula injection ---
-  e = new FinanceLedgerEngine();
+  e = makeEngine();
   e.executeAdministrativeAdjustment({ userId: 'user_3', amount: 20, direction: 'credit_user', category: 'goodwill', reason: 'csv injection check', actor: '=2+2' });
   const csv = e.generateCsvExport('audit_trail').content;
   assert(csv.includes(`"'=2+2"`) && !csv.includes(`"=2+2"`), 'CSV export neutralises formula-injection cells');

@@ -52,6 +52,12 @@ export function isGigPublic(g: Gig): boolean {
 
 export function sanitizePublicGig(g: Gig) {
   const { moderationStatus, moderationNotes, ...publicGig } = g;
+  
+  // Auto-expire featured status if past featuredUntil timestamp
+  if (publicGig.featured && publicGig.featuredUntil && new Date(publicGig.featuredUntil) < new Date()) {
+      publicGig.featured = false;
+  }
+  
   return publicGig;
 }
 

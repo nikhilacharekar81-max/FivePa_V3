@@ -21,6 +21,10 @@ interface WorkstreamActionsPanelProps {
   onStartVideoCall?: () => void;
   onAttachFiles: () => void;
   onDisputeAssistance?: () => void;
+  onOpenCancelRequestModal?: () => void;
+  onOpenRejectCancelModal?: () => void;
+  onAcceptCancelRequest?: () => void;
+  onOpenVeryLateCancelModal?: () => void;
 }
 
 export const WorkstreamActionsPanel: React.FC<WorkstreamActionsPanelProps> = ({
@@ -37,7 +41,11 @@ export const WorkstreamActionsPanel: React.FC<WorkstreamActionsPanelProps> = ({
   onOpenInvoiceModal,
   onStartVideoCall,
   onAttachFiles,
-  onDisputeAssistance
+  onDisputeAssistance,
+  onOpenCancelRequestModal,
+  onOpenRejectCancelModal,
+  onAcceptCancelRequest,
+  onOpenVeryLateCancelModal
 }) => {
   const isBuyer = currentUser?.id === order.buyerId;
   const isSeller = currentUser?.id === order.sellerId;
@@ -231,6 +239,77 @@ export const WorkstreamActionsPanel: React.FC<WorkstreamActionsPanelProps> = ({
           <div className="p-3 bg-emerald-50 rounded-2xl border border-emerald-200 text-emerald-800 text-xs font-medium flex items-center gap-2">
             <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
             <span>Invoice paid & funds credited to seller wallet. Chat remains open.</span>
+          </div>
+        )}
+
+        {/* GIG CANCELLATION ACTIONS */}
+        {((order.orderType === 'gig' || (order as any).gigOrderId) && (order.status as string) !== 'completed' && (order.status as string) !== 'cancelled') && (
+          <div className="space-y-2 pt-2 border-t border-slate-100">
+            {((order.orderType === 'gig' || (order as any).gigOrderId) && isBuyer && (order.status as string) !== 'completed' && (order.status as string) !== 'cancelled' && order.dueDate && (Date.now() > new Date(order.dueDate).getTime() + 24 * 3600 * 1000)) && onOpenVeryLateCancelModal && (
+              <button
+                onClick={onOpenVeryLateCancelModal}
+                className="w-full py-2.5 px-4 bg-rose-600 hover:bg-rose-500 text-white rounded-2xl text-xs font-bold text-left flex items-center justify-between transition shadow-xs cursor-pointer"
+              >
+                <div className="flex items-center gap-2.5">
+                  <AlertTriangle className="w-4 h-4" />
+                  <span>Cancel (Order is Very Late)</span>
+                </div>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            )}
+
+            {(!((order as any).cancellationRequest && (order as any).cancellationRequest.status === 'pending')) && onOpenCancelRequestModal && (
+              <button
+                onClick={onOpenCancelRequestModal}
+                className="w-full py-2 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold text-left flex items-center justify-between transition cursor-pointer"
+              >
+                <div className="flex items-center gap-2">
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Request Cancellation</span>
+                </div>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            )}
+
+            {((order as any).cancellationRequest && (order as any).cancellationRequest.status === 'pending') && (
+              <div className="p-3.5 bg-rose-50/80 border border-rose-200 rounded-2xl text-xs space-y-2">
+                <div className="flex items-center justify-between font-bold text-rose-900">
+                  <span className="flex items-center gap-1.5">
+                    <AlertTriangle className="w-4 h-4 text-rose-600" />
+                    <span>Cancellation Requested</span>
+                  </span>
+                  <span className="text-[10px] font-mono bg-rose-100 px-2 py-0.5 rounded-full text-rose-800">
+                    48h response window
+                  </span>
+                </div>
+                <p className="text-[11px] text-rose-800">
+                  Reason: <strong>{(order as any).cancellationRequest.reason}</strong>
+                  {(order as any).cancellationRequest.details && ` — "${(order as any).cancellationRequest.details}"`}
+                </p>
+                {currentUser?.id === (order as any).cancellationRequest.requesterId ? (
+                  <p className="text-[11px] text-rose-700 italic">Awaiting response from other party...</p>
+                ) : (
+                  <div className="flex items-center gap-2 pt-1">
+                    {onAcceptCancelRequest && (
+                      <button
+                        onClick={onAcceptCancelRequest}
+                        className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl text-center text-[11px] cursor-pointer shadow-xs transition"
+                      >
+                        Accept & Refund
+                      </button>
+                    )}
+                    {onOpenRejectCancelModal && (
+                      <button
+                        onClick={onOpenRejectCancelModal}
+                        className="flex-1 py-2 bg-slate-200 hover:bg-slate-300 text-slate-800 font-bold rounded-xl text-center text-[11px] cursor-pointer transition"
+                      >
+                        Reject
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
 

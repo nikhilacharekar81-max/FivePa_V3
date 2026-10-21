@@ -7,7 +7,7 @@ import {
 import { PPH_CATEGORIES } from '../components/HeaderCategoriesNav';
 import { slugify } from '../utils/slugify';
 import type { Order, UserAccount } from '../types';
-import { clearAuthToken } from '../utils/authToken';
+import { clearAuthToken, getAuthToken } from '../utils/authToken';
 
 export interface HeaderProps {
   navigate: (to: string, e?: React.MouseEvent) => void;
@@ -105,7 +105,7 @@ export function Header({
     const fetchNotifs = async () => {
       try {
         const res = await fetch('/api/notifications', {
-          headers: { 'Authorization': `Bearer ${localStorage.getItem('token') || ''}` }
+          headers: { 'Authorization': `Bearer ${getAuthToken() || ''}` }
         });
         if (res.ok) {
           const data = await res.json();
@@ -132,7 +132,7 @@ export function Header({
     try {
       await fetch(`/api/notifications/${id}/read`, {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${typeof window !== 'undefined' ? localStorage.getItem('token') || '' : ''}` }
+        headers: { 'Authorization': `Bearer ${getAuthToken() || ''}` }
       });
       setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
     } catch {}
@@ -147,7 +147,7 @@ export function Header({
     try {
       await fetch('/api/notifications/read-all', {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${typeof window !== 'undefined' ? localStorage.getItem('token') || '' : ''}` }
+        headers: { 'Authorization': `Bearer ${getAuthToken() || ''}` }
       });
       setNotifications(prev => prev.map(n => ({ ...n, read: true })));
     } catch {}

@@ -741,20 +741,60 @@ export function classifyActivityEvent(msg: WorkstreamMessage): ClassifiedEvent {
   }
 
   if (
+    action === 'GIG_CANCELLATION_REQUESTED' ||
     action === 'mutual_cancellation_requested' ||
-    /mutual cancellation/i.test(text)
+    /cancellation requested/i.test(text)
   ) {
     return {
       category: 'cancellation',
       categoryLabel: 'Cancellation Request',
-      badgeLabel: 'Pending Confirmation',
-      title: 'Mutual Order Cancellation Requested',
+      badgeLabel: 'Pending 48h Response',
+      title: 'Order Cancellation Requested',
       description: cleanText,
       iconName: 'AlertTriangle',
       headerCls: 'bg-rose-50/90 border-b border-rose-100 text-rose-950',
       badgeCls: 'bg-rose-100 text-rose-800 border-rose-200',
       iconBgCls: 'bg-rose-100 text-rose-700 ring-1 ring-rose-200',
       accentColor: 'rose',
+      metadata: meta
+    };
+  }
+
+  if (
+    action === 'GIG_CANCELLATION_ACCEPTED' ||
+    action === 'GIG_CANCELLATION_AUTO_CANCELLED' ||
+    /cancellation accepted|auto-cancelled/i.test(text)
+  ) {
+    return {
+      category: 'cancellation',
+      categoryLabel: 'Order Cancelled & Refunded',
+      badgeLabel: 'Cancelled',
+      title: 'Order Cancelled & Full Refund Issued',
+      description: cleanText,
+      iconName: 'RotateCcw',
+      headerCls: 'bg-slate-100 border-b border-slate-200 text-slate-900',
+      badgeCls: 'bg-slate-200 text-slate-700 border-slate-300',
+      iconBgCls: 'bg-slate-200 text-slate-700 ring-1 ring-slate-300',
+      accentColor: 'slate',
+      metadata: meta
+    };
+  }
+
+  if (
+    action === 'GIG_CANCELLATION_REJECTED' ||
+    /cancellation rejected/i.test(text)
+  ) {
+    return {
+      category: 'cancellation',
+      categoryLabel: 'Cancellation Rejected',
+      badgeLabel: 'Rejected',
+      title: 'Cancellation Request Rejected',
+      description: cleanText,
+      iconName: 'AlertTriangle',
+      headerCls: 'bg-amber-50/90 border-b border-amber-100 text-amber-950',
+      badgeCls: 'bg-amber-100 text-amber-900 border-amber-200',
+      iconBgCls: 'bg-amber-100 text-amber-700 ring-1 ring-amber-200',
+      accentColor: 'amber',
       metadata: meta
     };
   }

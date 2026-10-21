@@ -100,6 +100,7 @@ export default function App({ initialPath, initialData }: { initialPath?: string
   const [impersonatedUser, setImpersonatedUser] = useState<UserAccount | null>(null);
 
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(null);
+  const [errorToast, setErrorToast] = useState<string | null>(null);
 
   const updateCurrentUser = (u: UserAccount | null | ((prev: UserAccount | null) => UserAccount | null)) => {
     setCurrentUser(prev => {
@@ -129,6 +130,27 @@ export default function App({ initialPath, initialData }: { initialPath?: string
       } catch {}
     }
   }, []);
+
+  useEffect(() => {
+    const handleAppNotify = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail) {
+        setErrorToast(detail);
+      }
+    };
+    window.addEventListener('app:notify', handleAppNotify as EventListener);
+    return () => {
+      window.removeEventListener('app:notify', handleAppNotify as EventListener);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!errorToast) return;
+    const timer = setTimeout(() => {
+      setErrorToast(null);
+    }, 6000);
+    return () => clearTimeout(timer);
+  }, [errorToast]);
 
   // Custom Data Hook
   const {
@@ -1699,7 +1721,7 @@ export default function App({ initialPath, initialData }: { initialPath?: string
     e.preventDefault();
     if (!supportSubject.trim() || !supportMessage.trim()) return;
     try {
-      const activeUserId = impersonatedUser ? impersonatedUser.id : (currentUser ? currentUser.id : 'user_1');
+      const activeUserId = impersonatedUser ? impersonatedUser.id : (currentUser ? currentUser.id : '');
       const res = await fetch('/api/support-tickets', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-user-id': activeUserId },
@@ -1775,10 +1797,20 @@ export default function App({ initialPath, initialData }: { initialPath?: string
           dueDate: new Date(Date.now() + 10 * 86400000).toISOString().split('T')[0]
         })
       });
-      const newOrd = await res.json();
+      let newOrd: any;
+      try {
+        newOrd = await res.json();
+      } catch {
+        window.alert('Could not place the order. Please try again.');
+        return;
+      }
       if (!res.ok) {
         // e.g. insufficient wallet balance: nothing was created or charged
-        window.alert(newOrd?.error || 'Could not place the order.');
+        let errText = newOrd?.error || 'Could not place the order.';
+        if (errText.includes('Insufficient')) {
+          errText += ' Add funds to your wallet and try again.';
+        }
+        window.alert(errText);
         return;
       }
       setOrders(prev => [newOrd, ...prev]);
@@ -1788,6 +1820,7 @@ export default function App({ initialPath, initialData }: { initialPath?: string
       navigate(`/messages/${newOrd.id}`);
     } catch (err) {
       console.error(err);
+      window.alert('Network error while placing the order. Please try again.');
     }
   };
 
@@ -1801,7 +1834,7 @@ export default function App({ initialPath, initialData }: { initialPath?: string
     ];
     const randomFile = mockFiles[Math.floor(Math.random() * mockFiles.length)];
     
-    const currentUid = impersonatedUser ? impersonatedUser.id : (currentUser ? currentUser.id : 'user_1');
+    const currentUid = impersonatedUser ? impersonatedUser.id : (currentUser ? currentUser.id : '');
     const currentUname = impersonatedUser ? impersonatedUser.name : (currentUser ? currentUser.name : 'Guest');
 
     const token = getAuthToken();
@@ -1828,7 +1861,7 @@ export default function App({ initialPath, initialData }: { initialPath?: string
     e.preventDefault();
     if (!newMessageText.trim() || !selectedOrder) return;
 
-    const currentUid = impersonatedUser ? impersonatedUser.id : (currentUser ? currentUser.id : 'user_1');
+    const currentUid = impersonatedUser ? impersonatedUser.id : (currentUser ? currentUser.id : '');
     const currentUname = impersonatedUser ? impersonatedUser.name : (currentUser ? currentUser.name : 'Guest');
 
     try {
@@ -1950,7 +1983,7 @@ export default function App({ initialPath, initialData }: { initialPath?: string
         return [
           {
             id: gigId,
-            freelancerId: profileUser?.id || 'user_1',
+            freelancerId: profileUser?.id || '',
             freelancerName: profileUser?.name || 'Freelancer',
             freelancerUsername: profileUser ? slugify(profileUser.name) : 'freelancer',
             freelancerAvatar: profileUser?.avatar || '',
@@ -2285,9 +2318,9 @@ export default function App({ initialPath, initialData }: { initialPath?: string
                 {freelanceTab === 'projects' ? (
                   <div className="bg-white border border-slate-200 rounded-3xl shadow-xs divide-y divide-slate-100 overflow-hidden">
                     {(() => {
-                      const currentUid = impersonatedUser ? impersonatedUser.id : (currentUser ? currentUser.id : 'user_1');
+                      const currentUid = impersonatedUser ? impersonatedUser.id : (currentUser ? currentUser.id : '');
                       const filteredOrders = orders.filter(ord => {
-                        const isMyOrder = ord.sellerId === currentUid || ord.buyerId === currentUid || currentUid === 'user_1';
+                        const isMyOrder = Boolean(currentUid && (ord.sellerId === currentUid || ord.buyerId === currentUid));
                         if (!isMyOrder) return false;
 
                         const isExpired = (new Date(ord.dueDate) < new Date() && ord.status !== 'completed') || ord.status === 'cancelled';
@@ -2342,9 +2375,9 @@ export default function App({ initialPath, initialData }: { initialPath?: string
                 ) : (
                   <div className="bg-white border border-slate-200 rounded-3xl shadow-xs divide-y divide-slate-100 overflow-hidden">
                     {(() => {
-                      const currentUid = impersonatedUser ? impersonatedUser.id : (currentUser ? currentUser.id : 'user_1');
+                      const currentUid = impersonatedUser ? impersonatedUser.id : (currentUser ? currentUser.id : '');
                       const filteredGigs = gigs.filter(g => {
-                        const isMyGig = g.freelancerId === currentUid || (currentUser && g.freelancerName?.toLowerCase() === currentUser.name?.toLowerCase()) || currentUid === 'user_1';
+                        const isMyGig = Boolean(currentUid && (g.freelancerId === currentUid || (currentUser && g.freelancerName?.toLowerCase() === currentUser.name?.toLowerCase())));
                         if (!isMyGig) return false;
 
                         if (freelanceSubFilter === 'Active') return g.status === 'published' && (!g.moderationStatus || g.moderationStatus === 'approved');
@@ -3520,13 +3553,12 @@ export default function App({ initialPath, initialData }: { initialPath?: string
                     />
                   </div>
                   <div>
-                    <label className="block text-fiverr-dark font-bold uppercase mb-1">Mobile Phone Number</label>
+                    <label className="block text-fiverr-dark font-bold uppercase mb-1">Mobile Phone Number <span className="text-slate-400 font-normal lowercase">(optional)</span></label>
                     <input 
                       type="tel" 
                       placeholder="+1 (555) 000-0000" 
                       value={signupMobile} 
                       onChange={(e) => setSignupMobile(e.target.value)} 
-                      required 
                       className="w-full px-4 py-2.5 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-hidden" 
                     />
                   </div>
@@ -3534,7 +3566,9 @@ export default function App({ initialPath, initialData }: { initialPath?: string
                     <label className="block text-fiverr-dark font-bold uppercase mb-1">Password</label>
                     <input 
                       type="password" 
-                      placeholder="At least 6 characters" 
+                      placeholder="6 to 72 characters" 
+                      minLength={6}
+                      maxLength={72}
                       value={signupPassword} 
                       onChange={(e) => setSignupPassword(e.target.value)} 
                       required 
@@ -4577,6 +4611,20 @@ export default function App({ initialPath, initialData }: { initialPath?: string
           <span className="text-xs font-bold">{deleteSuccessToast}</span>
           <button 
             onClick={() => setDeleteSuccessToast(null)}
+            className="text-slate-400 hover:text-white text-xs font-bold ml-2 cursor-pointer"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* ERROR TOAST */}
+      {errorToast && (
+        <div className="fixed bottom-6 right-6 z-50 bg-slate-900 text-white px-4 py-3 rounded-2xl shadow-2xl flex items-center gap-3 border border-red-500/30 animate-in slide-in-from-bottom duration-200">
+          <div className="w-2 h-2 rounded-full bg-red-500 shrink-0 animate-pulse" />
+          <span className="text-xs font-bold text-red-200">{errorToast}</span>
+          <button 
+            onClick={() => setErrorToast(null)}
             className="text-slate-400 hover:text-white text-xs font-bold ml-2 cursor-pointer"
           >
             ✕

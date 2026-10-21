@@ -18,15 +18,6 @@ import { setupSSR } from './server/ssr.js';
 import { slugify } from './src/utils/slugify.js';
 export { siteSettings, DEFAULT_SITE_SETTINGS, isGigPublic, sanitizePublicGig };
 import { OrderFeeBreakdown } from './src/shared/fees.js';
-import {
-  SEED_USERS,
-  SEED_GIGS,
-  SEED_PROJECTS,
-  SEED_PROPOSALS,
-  SEED_ORDERS,
-  SEED_REVIEWS,
-  SEED_MESSAGES
-} from './src/data/completeSeedDataset.js';
 import { postgresStore } from './server/db/postgresStore.js';
 import {
   users,
@@ -45,6 +36,7 @@ import {
   auditLogs,
   userEmails,
   hydrateStoreFromPostgres,
+  cleanAllStoreData,
   notifications,
   type User,
   type Gig,
@@ -63,11 +55,29 @@ import {
   type Notification,
   type SiteFeeSettings,
   type WorkstreamOffer,
-  type WorkstreamOfferKind
+  type WorkstreamOfferKind,
+  type WorkstreamUploadRecord,
+  workstreamUploadIndex,
+  saveWorkstreamUploadIndex
 } from './server/store.js';
 export { auditLogs } from './server/store.js';
 export { saveOrdersToDisk } from './server/store.js';
 import { uploadFileToCloudStorage } from './server/cloudStorage.js';
+
+export interface ClearingEarning {
+  orderId: string;
+  sellerId: string;
+  amount: number;
+  clearsAt: string;
+}
+export const clearingEarnings: ClearingEarning[] = [];
+
+export function getUnclearedEarnings(userId: string): number {
+  const now = Date.now();
+  return clearingEarnings
+    .filter(e => e.sellerId === userId && new Date(e.clearsAt).getTime() > now)
+    .reduce((sum, e) => sum + e.amount, 0);
+}
 
 dotenv.config();
 
@@ -105,8 +115,10 @@ if (IS_PROD) {
 export const IS_PRODUCTION = process.env.NODE_ENV === 'production' || isCompiledProductionBundle;
 const JWT_SECRET: string = (() => {
   const fromEnv = process.env.JWT_SECRET;
-  if (fromEnv && fromEnv.length >= 32) return fromEnv;
-  return process.env.JWT_FALLBACK_SECRET || 'wph_jwt_secret_internal_session_token_key_2026';
+  if (IS_PRODUCTION && (!fromEnv || fromEnv.length < 32)) {
+    throw new Error('FATAL: JWT_SECRET must be configured in production and be at least 32 chars.');
+  }
+  return fromEnv || 'wph_jwt_secret_internal_session_token_key_2026';
 })();
 
 const REQUIRE_KYC_FOR_PAYOUTS = false;
@@ -258,30 +270,58 @@ export function generate6DigitCode(): string {
   return randomInt(100000, 1000000).toString();
 }
 
-// Verification codes are echoed back in API responses ONLY outside production (dev/test convenience).
-// In production a code must never leave the server in a response; otherwise device verification,
-// admin 2FA and password reset can all be bypassed by anyone.
-const EXPOSE_MOCK_CODES = !IS_PRODUCTION;
-export function mockCode(key: string, code: string): Record<string, string> {
-  return EXPOSE_MOCK_CODES ? { [key]: code } : {};
+// Security verification codes must NEVER be returned in any normal user-facing API responses.
+export function mockCode(_key: string, _code: string): Record<string, string> {
+  return {};
 }
 
 // New-device verification for regular users. Admin accounts ALWAYS require it.
-// Defaults to on outside production. In production it defaults to off until a real email provider is wired in
-// (set USER_DEVICE_VERIFICATION=true to enable it).
 const USER_DEVICE_VERIFICATION = process.env.USER_DEVICE_VERIFICATION
   ? process.env.USER_DEVICE_VERIFICATION === 'true'
   : !IS_PRODUCTION;
 
-// No email provider is integrated yet. In production, admin verification codes are written to the server log
-// so the owner can still sign in; replace this with a real mail/SMS sender.
+// Security code delivery: logged securely on the server console when no external SMTP provider is configured.
+export function deliverSecurityCode(target: string, type: string, code: string) {
+  console.warn(`[SECURITY AUTH CODE] ${type} code for ${target}: ${code}`);
+}
+
 export function deliverAdminCode(email: string, code: string) {
-  console.warn(`[AUTH ADMIN 2FA] Verification code for ${email}: ${code}`);
+  deliverSecurityCode(email, 'ADMIN_2FA', code);
 }
 
 export function recordUserEmail(email: UserEmail) {
-  userEmails.unshift(email);
+  // CRITICAL SECURITY FIX: Never persist plaintext 6-digit verification codes into the user-facing inbox.
+  const sanitized: UserEmail = {
+    ...email,
+    snippet: email.snippet ? email.snippet.replace(/\b\d{6}\b/g, '******') : '',
+    body: email.body ? email.body.replace(/\b\d{6}\b/g, '******') : ''
+  };
+  userEmails.unshift(sanitized);
   postgresStore.saveUserEmails(userEmails).catch(err => console.error('[PostgresStore] Failed to save user emails:', err));
+}
+
+export function verifyAndConsumeWithdrawalCode(userId: string, code: unknown): { ok: true } | { ok: false; status: number; error: string } {
+  if (!code || typeof code !== 'string') {
+    return { ok: false, status: 400, error: 'Email verification code is required for withdrawal. Please request a code first via /api/auth/withdrawal/request-code.' };
+  }
+  const record = withdrawalVerificationCodes.get(userId);
+  if (!record) {
+    return { ok: false, status: 400, error: 'No active withdrawal verification code found. Please request a new code via /api/auth/withdrawal/request-code.' };
+  }
+  if (Date.now() > record.expiresAt) {
+    withdrawalVerificationCodes.delete(userId);
+    return { ok: false, status: 400, error: 'Withdrawal verification code has expired. Please request a new code.' };
+  }
+  if (record.attempts >= 5) {
+    withdrawalVerificationCodes.delete(userId);
+    return { ok: false, status: 429, error: 'Too many incorrect attempts. Verification code invalidated. Please request a new code.' };
+  }
+  if (record.code !== code.trim()) {
+    record.attempts++;
+    return { ok: false, status: 400, error: 'Invalid verification code.' };
+  }
+  withdrawalVerificationCodes.delete(userId);
+  return { ok: true };
 }
 
 export function isValidEmail(v: string): boolean {
@@ -295,32 +335,36 @@ export function isValidMobile(v: string): boolean {
 app.post('/api/auth/signup', async (req, res) => {
   try {
     const { email, password, confirmPassword, mobile, name } = req.body || {};
-    if (typeof email !== 'string' || typeof password !== 'string' || typeof mobile !== 'string' || !email.trim() || !password || !mobile.trim()) {
-      return apiError(res, 'Email, password, and mobile number are required.');
+    if (typeof email !== 'string' || typeof password !== 'string' || !email.trim() || !password) {
+      return apiError(res, 'Email and password are required.');
     }
     if (password !== confirmPassword) {
       return res.status(400).json({ error: 'Passwords do not match.' });
     }
-    if (password.length < 6) {
-      return res.status(400).json({ error: 'Password must be at least 6 characters long.' });
-    }
-    if (password.length > 72) {
-      return res.status(400).json({ error: 'Password must be at most 72 characters long.' });
+    if (password.length < 6 || password.length > 72) {
+      return res.status(400).json({ error: 'Password must be between 6 and 72 characters long.' });
     }
 
     const normalizedEmail = email.trim().toLowerCase();
     if (!isValidEmail(normalizedEmail)) {
       return res.status(400).json({ error: 'Please enter a valid email address.' });
     }
-    if (!isValidMobile(mobile.trim())) {
+
+    const trimmedMobile = typeof mobile === 'string' ? mobile.trim() : '';
+    if (trimmedMobile && !isValidMobile(trimmedMobile)) {
       return res.status(400).json({ error: 'Please enter a valid mobile number.' });
     }
-    const existing = users.find(u => u.email && u.email.toLowerCase() === normalizedEmail);
-    if (existing) {
+
+    const existingEmail = users.find(u => u.email && u.email.toLowerCase() === normalizedEmail);
+    if (existingEmail) {
       return res.status(409).json({ error: 'An account with this email already exists.' });
     }
-    if (users.some(u => u.mobile && u.mobile === mobile.trim())) {
-      return res.status(409).json({ error: 'An account with this mobile number already exists.' });
+
+    if (trimmedMobile) {
+      const existingMobile = users.find(u => u.mobile && u.mobile.trim() === trimmedMobile);
+      if (existingMobile) {
+        return res.status(409).json({ error: 'An account with this mobile number already exists.' });
+      }
     }
 
     const hashedPassword = bcrypt.hashSync(password, 10);
@@ -330,7 +374,7 @@ app.post('/api/auth/signup', async (req, res) => {
       id: newUserId,
       name: (typeof name === 'string' && name.trim() ? name.trim().slice(0, 80) : normalizedEmail.split('@')[0]),
       email: normalizedEmail,
-      mobile: mobile.trim(),
+      mobile: trimmedMobile || undefined,
       role: 'user',
       avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=400&h=400&fit=crop',
       title: 'Freelancer / Member',
@@ -353,6 +397,14 @@ app.post('/api/auth/signup', async (req, res) => {
     };
 
     users.push(newUser);
+    try {
+      await postgresStore.saveUsers(users);
+    } catch (err) {
+      console.error('[Signup] Failed to persist:', err);
+      const idx = users.findIndex(u => u.id === newUser.id);
+      if (idx !== -1) users.splice(idx, 1);
+      return res.status(500).json({ error: 'Could not save. Please try again.' });
+    }
     ensureWallet(newUserId);
 
     const emailCode = generate6DigitCode();
@@ -363,15 +415,17 @@ app.post('/api/auth/signup', async (req, res) => {
       attempts: 0
     });
 
-    const smsCode = generate6DigitCode();
-    smsVerificationCodes.set(mobile.trim(), {
-      code: smsCode,
-      expiresAt: Date.now() + 15 * 60 * 1000,
-      lastResendAt: Date.now(),
-      attempts: 0
-    });
+    deliverSecurityCode(normalizedEmail, 'SIGNUP_EMAIL', emailCode);
 
-    if (!IS_PRODUCTION) {
+    if (trimmedMobile) {
+      const smsCode = generate6DigitCode();
+      smsVerificationCodes.set(trimmedMobile, {
+        code: smsCode,
+        expiresAt: Date.now() + 15 * 60 * 1000,
+        lastResendAt: Date.now(),
+        attempts: 0
+      });
+      deliverSecurityCode(trimmedMobile, 'SIGNUP_SMS', smsCode);
     }
 
     recordUserEmail({
@@ -379,8 +433,8 @@ app.post('/api/auth/signup', async (req, res) => {
       userId: newUserId,
       userEmail: normalizedEmail,
       subject: 'Verify Your WorkPerHour Account',
-      snippet: `Your email verification code is ${emailCode}`,
-      body: `Welcome to WorkPerHour! Please enter verification code ${emailCode} to verify your account.`,
+      snippet: 'Welcome to WorkPerHour! Verification code dispatched.',
+      body: 'Welcome to WorkPerHour! Please enter the verification code sent to your registered contact channel to verify your account.',
       date: new Date().toLocaleDateString(),
       read: false,
       type: 'GENERAL'
@@ -391,9 +445,7 @@ app.post('/api/auth/signup', async (req, res) => {
     res.status(201).json({
       success: true,
       token,
-      user: safeUser(newUser),
-      ...mockCode('mockEmailCode', emailCode),
-      ...mockCode('mockSmsCode', smsCode)
+      user: safeUser(newUser)
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Signup failed' });
@@ -426,6 +478,7 @@ app.post('/api/auth/verify-email', (req, res) => {
   if (user) {
     (user as any).emailVerified = true;
     user.verified = true;
+    saveUsersToPostgres();
   }
   res.json({ success: true, message: 'Email verified successfully!' });
 });
@@ -449,23 +502,21 @@ app.post('/api/auth/resend-email-code', (req, res) => {
   });
 
   const user = users.find(u => u.email && u.email.toLowerCase() === normalizedEmail);
+  deliverSecurityCode(normalizedEmail, 'EMAIL_VERIFICATION', newCode);
+
   recordUserEmail({
     id: 'email_' + Date.now(),
     userId: user?.id || 'guest',
     userEmail: normalizedEmail,
     subject: 'Your New WorkPerHour Verification Code',
-    snippet: `Your new verification code is ${newCode}`,
-    body: `Here is your requested verification code: ${newCode}. It is valid for 15 minutes.`,
+    snippet: 'A new verification code was dispatched.',
+    body: 'A new verification code was requested for your account. Please enter the code sent to your registered contact channel.',
     date: new Date().toLocaleDateString(),
     read: false,
     type: 'GENERAL'
   });
 
-  if (!IS_PRODUCTION) {
-  } else if (user && (user.role === 'admin' || user.role === 'super_admin')) {
-    deliverAdminCode(normalizedEmail, newCode);
-  }
-  res.json({ success: true, message: 'New verification code generated and sent.', ...mockCode('mockEmailCode', newCode) });
+  res.json({ success: true, message: 'New verification code generated and sent.' });
 });
 
 // 3. Mobile / SMS Verification & Resend
@@ -494,6 +545,7 @@ app.post('/api/auth/verify-sms', (req, res) => {
   if (user) {
     (user as any).mobileVerified = true;
     user.verified = true;
+    saveUsersToPostgres();
   }
   res.json({ success: true, message: 'Mobile verified successfully via SMS! Account is now active and usable.' });
 });
@@ -516,8 +568,8 @@ app.post('/api/auth/resend-sms-code', (req, res) => {
     attempts: 0
   });
 
-  if (!IS_PRODUCTION) {}
-  res.json({ success: true, message: 'New SMS OTP dispatched.', ...mockCode('mockSmsCode', newCode) });
+  deliverSecurityCode(cleanMobile, 'SMS_OTP', newCode);
+  res.json({ success: true, message: 'New SMS OTP dispatched.' });
 });
 
 function sanitizeAndCreateMessage(
@@ -696,17 +748,17 @@ async function handleLogin(req: Request, res: Response) {
         attempts: 0
       });
 
-      if (IS_PRODUCTION && isAdminRole) deliverAdminCode(user.email, newCode);
+      deliverSecurityCode(user.email, isAdminRole ? 'ADMIN_2FA' : 'DEVICE_LOGIN', newCode);
 
       recordUserEmail({
         id: 'email_' + Date.now(),
         userId: user.id,
         userEmail: user.email,
-        subject: isAdminRole ? 'Admin Login Email Verification Code' : 'New Device Login Verification Code',
-        snippet: `Your verification code is ${newCode}`,
+        subject: isAdminRole ? 'Admin Login Security Notice' : 'New Device Login Security Notice',
+        snippet: 'Security verification code dispatched.',
         body: isAdminRole
-          ? `An administrator login attempt was initiated. Please enter verification code ${newCode} to access the Admin Dashboard.`
-          : `A login attempt from a new device (${deviceId}) was detected. Please enter verification code ${newCode} to create a new session.`,
+          ? 'An administrator login attempt was initiated. Please enter the verification code sent to your registered admin contact channel to access the Admin Dashboard.'
+          : `A login attempt from a new device (${deviceId}) was detected. Please enter the verification code sent to your registered contact channel.`,
         date: new Date().toLocaleDateString(),
         read: false,
         type: 'GENERAL'
@@ -718,8 +770,8 @@ async function handleLogin(req: Request, res: Response) {
         message: isAdminRole
           ? 'Admin login requires an email verification code. Code sent to your registered admin email.'
           : 'New device detected. Please provide the email verification code sent to your email.',
-        ...mockCode('mockEmailCode', newCode),
-        deviceId
+        deviceId,
+        mockEmailCode: !IS_PRODUCTION ? newCode : undefined
       });
     }
 
@@ -751,6 +803,12 @@ async function handleLogin(req: Request, res: Response) {
 
   for (const key of attemptKeys) loginAttempts.delete(key);
 
+  try {
+    await postgresStore.saveUsers(users);
+  } catch (err: any) {
+    return res.status(500).json({ error: 'Failed to persist login session.' });
+  }
+
   const token = signToken({ id: user.id, role: user.role, email: user.email, sessionVersion: user.sessionVersion });
   return res.json({
     success: true,
@@ -774,7 +832,7 @@ app.get('/api/auth/me', (req, res) => {
   return res.json({ success: true, user: safeUser(u) });
 });
 
-app.post('/api/auth/demo-session', (req, res) => {
+app.post('/api/auth/demo-session', async (req, res) => {
   // Passwordless demo login is a development convenience only; never available in production.
   if (IS_PRODUCTION && !isTestEnv) return res.status(404).json({ error: 'Not found.' });
   const { userId } = req.body || {};
@@ -784,6 +842,11 @@ app.post('/api/auth/demo-session', (req, res) => {
     return res.status(403).json({ error: 'Demo login is not available for privileged accounts.' });
   }
   user.sessionVersion = (user.sessionVersion || 0) + 1;
+  try {
+    await postgresStore.saveUsers(users);
+  } catch (err: any) {
+    return res.status(500).json({ error: 'Failed to persist demo session.' });
+  }
   const token = signToken({ id: user.id, role: user.role, email: user.email, sessionVersion: user.sessionVersion });
   return res.json({ success: true, token, user: safeUser(user) });
 });
@@ -834,7 +897,7 @@ app.post('/api/auth/forgot-password/request', (req, res) => {
     deliverAdminCode(user.email, code);
   }
 
-  res.json({ ...genericResponse, ...mockCode('mockRecoveryCode', code) });
+  res.json({ ...genericResponse });
 });
 
 app.post('/api/auth/forgot-password/verify', (req, res) => {
@@ -876,6 +939,7 @@ app.post('/api/auth/forgot-password/reset', (req, res) => {
 
   user.password = bcrypt.hashSync(newPassword, 10);
   user.sessionVersion = (user.sessionVersion || 1) + 1;
+  saveUsersToPostgres();
   disconnectUserSockets(user.id, 'Password reset');
   forgotPasswordCodes.delete(query);
 
@@ -895,46 +959,25 @@ app.post('/api/auth/withdrawal/request-code', requireAuth, (req, res) => {
     attempts: 0
   });
 
+  deliverSecurityCode(caller.email, 'WITHDRAWAL', code);
+
   recordUserEmail({
     id: 'email_' + Date.now(),
     userId: caller.id,
     userEmail: caller.email,
-    subject: 'Withdrawal Email Verification Code',
-    snippet: `Your withdrawal code is ${code}`,
-    body: `You requested a withdrawal from your WorkPerHour wallet. Use verification code ${code} to complete the transaction.`,
+    subject: 'Withdrawal Email Verification Requested',
+    snippet: 'Withdrawal verification code dispatched.',
+    body: 'You requested a withdrawal from your WorkPerHour wallet. Please use the verification code sent to your registered contact channel to complete the transaction.',
     date: new Date().toLocaleDateString(),
     read: false,
     type: 'GENERAL'
   });
 
-  res.json({ success: true, message: 'Withdrawal verification code sent to your registered email.', ...mockCode('mockWithdrawalCode', code) });
+  res.json({ success: true, message: 'Withdrawal verification code sent to your registered email.' });
 });
 
 app.post('/api/auth/withdrawal/verify-and-execute', requireAuth, (req, res) => {
   const caller = (req as any).authenticatedUser;
-  const { code, amount, method, accountDetails } = req.body || {};
-
-  if (!code) return res.status(400).json({ error: 'Email verification code is required for withdrawal.' });
-
-  const record = withdrawalVerificationCodes.get(caller.id);
-  if (!record) {
-    return res.status(400).json({ error: 'No active withdrawal verification code found. Please request a new code.' });
-  }
-  if (Date.now() > record.expiresAt) {
-    withdrawalVerificationCodes.delete(caller.id);
-    return res.status(400).json({ error: 'Withdrawal verification code has expired.' });
-  }
-  if (record.attempts >= 5) {
-    withdrawalVerificationCodes.delete(caller.id);
-    return res.status(429).json({ error: 'Too many incorrect attempts. Verification code invalidated.' });
-  }
-  if (record.code !== code.trim()) {
-    record.attempts++;
-    return res.status(400).json({ error: 'Invalid verification code.' });
-  }
-
-  withdrawalVerificationCodes.delete(caller.id);
-
   req.body.userId = caller.id;
   return handlePayoutRequest(req, res);
 });
@@ -1370,21 +1413,12 @@ export function savePayoutsToDisk() {
 export function saveProjectsToDisk() { 
   postgresStore.saveProjects(projects).catch(err => console.error('[PostgresStore] Failed to save projects:', err)); 
 }
-export function saveWorkstreamUploadIndex() { 
-  // for (const [fn, rec] of Object.entries(workstreamUploadIndex)) {
-  //   postgresStore.saveUploadRecord(fn, rec).catch(err => console.error('[PostgresStore] Failed to save upload record:', err));
-  // }
-}
+
 export function saveUsersToPostgres() {
   return postgresStore.saveUsers(users).catch(err => console.error('[PostgresStore] Failed to save users:', err));
 }
 export function saveGigsToPostgres() {
   return postgresStore.saveGigs(gigs).catch(err => console.error('[PostgresStore] Failed to save gigs:', err));
-}
-
-function handleCorruption(filePath: string, error: any) {
-  console.error(`DATA WARNING: Corruption or read error in ${filePath}:`, error);
-  console.log('Falling back to seed / default data.');
 }
 
 const MAX_AUDIT_LOGS = 1000;
@@ -1922,7 +1956,7 @@ function topUpOrderEscrowWithEvent(params: { orderId: string; orderTitle: string
   return res;
 }
 
-function releaseOrderFunds(order: Order, actor: string, reason: string, approvedByBuyer: boolean, requestKey?: string) {
+export function releaseOrderFunds(order: Order, actor: string, reason: string, approvedByBuyer: boolean, requestKey?: string) {
   if (requestKey && requestKeyCache.has(requestKey)) {
     return requestKeyCache.get(requestKey);
   }
@@ -1950,6 +1984,14 @@ function releaseOrderFunds(order: Order, actor: string, reason: string, approved
     releaseCompletedOrders.add(order.id);
     seller.earned = (seller.earned || 0) + result.freelancerNet;
     seller.completedJobs = (seller.completedJobs || 0) + 1;
+    if (order.orderType === 'gig' || order.gigOrderId) {
+      clearingEarnings.push({
+        orderId: order.id,
+        sellerId: order.sellerId,
+        amount: result.freelancerNet,
+        clearsAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString()
+      });
+    }
   }
   syncUserBalances();
   postgresStore.saveOrders(orders);
@@ -1975,7 +2017,7 @@ function releaseOrderFunds(order: Order, actor: string, reason: string, approved
   return result;
 }
 
-function refundOrderFunds(order: Order, amount: number | undefined, actor: string, reason: string, requestKey?: string) {
+export function refundOrderFunds(order: Order, amount: number | undefined, actor: string, reason: string, requestKey?: string) {
   if (requestKey && requestKeyCache.has(requestKey)) {
     return requestKeyCache.get(requestKey);
   }
@@ -2239,8 +2281,8 @@ app.patch('/api/orders/:id/extend-time', requireAdmin, async (req, res) => {
 
   registerAuditLog({
     id: 'log_' + Date.now(),
-    actor: 'Admin Chief',
-    role: 'super_admin',
+    actor: adminActor(req),
+    role: (req as any).authenticatedUser?.role || 'admin',
     action: 'ORDER_DEADLINE_EXTENDED',
     target: `Order #${order.id}`,
     details: `Extended deadline to ${order.dueDate} (${days || 'custom'} days). ${reason || ''}`,
@@ -2543,6 +2585,7 @@ app.post('/api/orders/:id/dispute', requireAuth, (req, res) => {
     postgresStore.saveOrders(orders);
     postgresStore.saveDisputes(disputes);
     broadcastMessage(sysMsg, order.id);
+    notifyOrderParties(order.id, 'dispute_opened', sysMsg.text, sysMsg.id);
 
     res.json({ success: true, dispute: newDispute, order: enrichOrderWithServiceInfo(order) });
   } catch (err: any) {
@@ -2603,8 +2646,8 @@ app.patch('/api/orders/:id/pause-timer', requireRole(['admin', 'super_admin', 's
 
   registerAuditLog({
     id: 'log_' + Date.now(),
-    actor: 'Admin Chief',
-    role: 'super_admin',
+    actor: adminActor(req),
+    role: (req as any).authenticatedUser?.role || 'admin',
     action: order.isTimerPaused ? 'ORDER_TIMER_PAUSED' : 'ORDER_TIMER_RESUMED',
     target: `Order #${order.id}`,
     details: order.isTimerPaused ? 'Timer paused by Admin' : 'Timer resumed by Admin',
@@ -2621,6 +2664,7 @@ app.patch('/api/users/availability', requireAuth, (req, res) => {
   const user = users.find(u => u.id === userId);
   if (!user) return res.status(404).json({ error: 'User not found' });
   user.isAvailableNow = !!isAvailableNow;
+  saveUsersToPostgres();
   res.json({ success: true, user: safeUser(user) });
 });
 
@@ -2631,6 +2675,7 @@ app.post('/api/users/:id/flag', requireAdmin, (req, res) => {
 
   user.isFlagged = !user.isFlagged;
   user.flagReason = user.isFlagged ? (req.body.reason || 'Flagged for TOS investigation.') : undefined;
+  saveUsersToPostgres();
 
   registerAuditLog({
     id: 'log_' + Date.now(),
@@ -2920,6 +2965,12 @@ function handlePayoutRequest(req: Request, res: Response) {
     const user = users.find(u => u.id === freelancerId) || users[0];
     ensureWallet(freelancerId);
 
+    // CRITICAL SECURITY FIX: Withdrawal email verification code MUST be verified and consumed
+    const verification = verifyAndConsumeWithdrawalCode(freelancerId, req.body?.code);
+    if (!verification.ok) {
+      return res.status(verification.status).json({ error: verification.error });
+    }
+
     const rawMethod = String(req.body?.method || 'Bank Transfer');
     const settingKey = ALLOWED_METHODS[rawMethod];
     if (!settingKey || !DEFAULT_SITE_SETTINGS.wallets.allowedPayoutMethods[settingKey]) {
@@ -2932,8 +2983,10 @@ function handlePayoutRequest(req: Request, res: Response) {
     }
 
     const currentBal = financeLedger.getWalletBalance(freelancerId) ?? user.walletBalance;
-    if (currentBal < numAmount) {
-      return res.status(400).json({ error: `Insufficient available funds. Available: $${currentBal.toFixed(2)}, Requested: $${numAmount.toFixed(2)}` });
+    const uncleared = getUnclearedEarnings(freelancerId);
+    const withdrawable = Math.max(0, currentBal - uncleared);
+    if (withdrawable < numAmount) {
+      return res.status(400).json({ error: `Insufficient withdrawable funds (14-day clearance hold active). Withdrawable: $${withdrawable.toFixed(2)}, Requested: $${numAmount.toFixed(2)}, Clearing: $${uncleared.toFixed(2)}` });
     }
 
     const id = 'pay_' + randomUUID().slice(0, 8);
@@ -3276,13 +3329,18 @@ app.post('/api/payments/escrow/refund', requireAuth, (req, res) => {
     const isSeller = userId === order.sellerId;
     const isBuyer = userId === order.buyerId;
 
-    const isOverdueBy76Hours = order.dueDate ? (Date.now() > new Date(order.dueDate).getTime() + 76 * 60 * 60 * 1000) : false;
+    const isGigOrder = order.orderType === 'gig' || Boolean(order.gigOrderId);
+    const overdueThresholdHours = isGigOrder ? 24 : 76;
+    const isOverdueByThreshold = order.dueDate ? (Date.now() > new Date(order.dueDate).getTime() + overdueThresholdHours * 60 * 60 * 1000) : false;
 
     if (!isAdmin && !isSeller) {
-      if (isBuyer && isOverdueBy76Hours) {
-        // Buyer permitted to cancel & refund because seller is 76h+ past due date (ghosted / missed deadline)
+      if (isBuyer && isOverdueByThreshold) {
+        if (isGigOrder && (!reason || !String(reason).trim())) {
+          return res.status(400).json({ error: 'Cancellation reason is required for very-late cancellation.' });
+        }
+        order.cancellationType = 'very_late';
       } else if (isBuyer) {
-        return res.status(403).json({ error: 'Forbidden: Buyer cannot cancel this order until 76 hours have passed past the agreed due date.' });
+        return res.status(403).json({ error: `Forbidden: Buyer cannot cancel this order until ${overdueThresholdHours} hours have passed past the agreed due date.` });
       } else {
         return res.status(403).json({ error: 'Forbidden: Not authorized to refund this escrow.' });
       }
@@ -3313,6 +3371,234 @@ app.post('/api/payments/escrow/refund', requireAuth, (req, res) => {
     releaseOrderLock(orderId);
   }
 });
+
+// Gig Cancellation Request
+app.post('/api/orders/:id/cancel-request', requireAuth, rateLimit(20, 60_000), (req, res) => {
+  const orderId = req.params.id;
+  if (!tryAcquireOrderLock(orderId, res)) return;
+  try {
+    const userId = (req as any).authenticatedUserId;
+    const caller = users.find(u => u.id === userId);
+    const order = orderIndex.get(orderId) || orders.find(o => o.id === orderId);
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+    if (order.orderType !== 'gig' && !order.gigOrderId) {
+      return res.status(400).json({ error: 'Cancellation request flow is for gigs only.' });
+    }
+    if (order.status === 'completed' || order.status === 'cancelled' || order.status === 'disputed') {
+      return res.status(400).json({ error: `Cannot request cancellation for order in status "${order.status}".` });
+    }
+    const isBuyer = userId === order.buyerId;
+    const isSeller = userId === order.sellerId;
+    if (!isBuyer && !isSeller) {
+      return res.status(403).json({ error: 'Forbidden: Only buyer or seller can request cancellation.' });
+    }
+    if (order.cancellationRequest && order.cancellationRequest.status === 'pending') {
+      return res.status(409).json({ error: 'A cancellation request is already pending for this order.' });
+    }
+
+    const { reason, details } = req.body;
+    if (!reason || typeof reason !== 'string' || !reason.trim()) {
+      return res.status(400).json({ error: 'Cancellation reason is required.' });
+    }
+
+    const now = new Date().toISOString();
+    const respondBy = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
+    const requestedBy = isBuyer ? 'buyer' : 'seller';
+
+    order.cancellationRequest = {
+      requestedBy,
+      requesterId: userId,
+      reason: reason.trim(),
+      details: details ? String(details).trim() : undefined,
+      requestedAt: now,
+      respondBy,
+      status: 'pending'
+    };
+    if (!order.cancellationHistory) order.cancellationHistory = [];
+    order.cancellationHistory.push(order.cancellationRequest);
+
+    postgresStore.saveOrders(orders);
+
+    const recipientId = isBuyer ? order.sellerId : order.buyerId;
+    createNotification({
+      userId: recipientId,
+      title: 'Cancellation Requested',
+      message: `${requestedBy === 'buyer' ? 'Buyer' : 'Seller'} requested cancellation of order #${order.id}. Reason: ${reason}. You have 48 hours to respond.`,
+      type: 'order',
+      link: `/messages/${order.id}`
+    });
+
+    registerAuditLog({
+      id: 'log_' + Date.now(),
+      actor: caller?.name || requestedBy,
+      role: caller?.role || requestedBy,
+      action: 'GIG_CANCELLATION_REQUESTED',
+      target: `Order #${order.id}`,
+      details: `${requestedBy} requested cancellation. Reason: ${reason}`,
+      timestamp: new Date().toLocaleString()
+    });
+
+    res.json({ success: true, order: enrichOrderWithServiceInfo(order) });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  } finally {
+    releaseOrderLock(orderId);
+  }
+});
+
+// Respond to Gig Cancellation Request
+app.post('/api/orders/:id/cancel-request/respond', requireAuth, rateLimit(20, 60_000), (req, res) => {
+  const orderId = req.params.id;
+  if (!tryAcquireOrderLock(orderId, res)) return;
+  try {
+    const userId = (req as any).authenticatedUserId;
+    const caller = users.find(u => u.id === userId);
+    const order = orderIndex.get(orderId) || orders.find(o => o.id === orderId);
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+    if (!order.cancellationRequest || order.cancellationRequest.status !== 'pending') {
+      return res.status(400).json({ error: 'No pending cancellation request found for this order.' });
+    }
+
+    const isBuyer = userId === order.buyerId;
+    const isSeller = userId === order.sellerId;
+    if (!isBuyer && !isSeller) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    if (userId === order.cancellationRequest.requesterId) {
+      return res.status(403).json({ error: 'You cannot respond to your own cancellation request.' });
+    }
+
+    const { action, reason } = req.body;
+    if (!['accept', 'reject'].includes(action)) {
+      return res.status(400).json({ error: 'Invalid action. Must be "accept" or "reject".' });
+    }
+    if (action === 'reject' && (!reason || !String(reason).trim())) {
+      return res.status(400).json({ error: 'Rejection reason is required when rejecting a cancellation request.' });
+    }
+
+    const now = new Date().toISOString();
+    order.cancellationRequest.respondedBy = userId;
+    order.cancellationRequest.respondedAt = now;
+
+    if (action === 'accept') {
+      order.cancellationRequest.status = 'accepted';
+      const actorName = caller?.name || (isBuyer ? 'Buyer' : 'Seller');
+      const requestKey = `cancel_accept_${order.id}_${order.cancellationRequest.requestedAt}`;
+      const refundRes = refundOrderFunds(order, undefined, actorName, `Mutual cancellation accepted: ${order.cancellationRequest.reason}`, requestKey);
+      
+      createNotification({
+        userId: order.cancellationRequest.requesterId,
+        title: 'Cancellation Accepted',
+        message: `Your cancellation request for order #${order.id} was accepted. Full refund issued ($${refundRes.refunded}).`,
+        type: 'order',
+        link: `/messages/${order.id}`
+      });
+
+      registerAuditLog({
+        id: 'log_' + Date.now(),
+        actor: actorName,
+        role: caller?.role || 'user',
+        action: 'GIG_CANCELLATION_ACCEPTED',
+        target: `Order #${order.id}`,
+        details: `Cancellation accepted. Full refund of $${refundRes.refunded} issued.`,
+        timestamp: new Date().toLocaleString()
+      });
+
+      return res.json({ success: true, order: enrichOrderWithServiceInfo(order), refunded: refundRes.refunded });
+    } else {
+      order.cancellationRequest.status = 'rejected';
+      order.cancellationRequest.rejectionReason = String(reason).trim();
+      postgresStore.saveOrders(orders);
+
+      const actorName = caller?.name || (isBuyer ? 'Buyer' : 'Seller');
+      createNotification({
+        userId: order.cancellationRequest.requesterId,
+        title: 'Cancellation Rejected',
+        message: `Your cancellation request for order #${order.id} was rejected. Reason: ${reason}. Order continues normally.`,
+        type: 'order',
+        link: `/messages/${order.id}`
+      });
+
+      registerAuditLog({
+        id: 'log_' + Date.now(),
+        actor: actorName,
+        role: caller?.role || 'user',
+        action: 'GIG_CANCELLATION_REJECTED',
+        target: `Order #${order.id}`,
+        details: `Cancellation rejected. Reason: ${reason}`,
+        timestamp: new Date().toLocaleString()
+      });
+
+      return res.json({ success: true, order: enrichOrderWithServiceInfo(order) });
+    }
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  } finally {
+    releaseOrderLock(orderId);
+  }
+});
+
+function processCancellationTimeouts() {
+  const now = Date.now();
+  for (const order of orders) {
+    if (!order.cancellationRequest || order.cancellationRequest.status !== 'pending') continue;
+    if (order.orderType !== 'gig' && !order.gigOrderId) continue;
+    const respondByTime = new Date(order.cancellationRequest.respondBy).getTime();
+    if (now > respondByTime) {
+      if (orderStateLocks.has(order.id)) continue;
+      try {
+        acquireOrderLock(order.id);
+      } catch {
+        continue;
+      }
+      try {
+        order.cancellationRequest.status = 'auto_cancelled';
+        const requestKey = `cancel_timeout_${order.id}_${order.cancellationRequest.requestedAt}`;
+        const refundRes = refundOrderFunds(order, undefined, 'System Auto-Cancel', 'Cancellation request auto-cancelled after 48h timeout', requestKey);
+        postgresStore.saveOrders(orders);
+
+        const requesterId = order.cancellationRequest.requesterId;
+        const otherId = requesterId === order.buyerId ? order.sellerId : order.buyerId;
+        createNotification({
+          userId: requesterId,
+          title: 'Cancellation Auto-Cancelled',
+          message: `Order #${order.id} cancellation request timed out after 48h. Order cancelled & full refund issued ($${refundRes.refunded}).`,
+          type: 'order',
+          link: `/messages/${order.id}`
+        });
+        createNotification({
+          userId: otherId,
+          title: 'Cancellation Auto-Cancelled',
+          message: `Order #${order.id} cancellation request timed out after 48h. Order cancelled & full refund issued ($${refundRes.refunded}).`,
+          type: 'order',
+          link: `/messages/${order.id}`
+        });
+
+        registerAuditLog({
+          id: 'log_' + Date.now(),
+          actor: 'System Auto-Cancel',
+          role: 'super_admin',
+          action: 'GIG_CANCELLATION_AUTO_CANCELLED',
+          target: `Order #${order.id}`,
+          details: `48h response deadline elapsed. Auto-cancelled order and refunded $${refundRes.refunded}.`,
+          timestamp: new Date().toLocaleString()
+        });
+      } catch (err) {
+        console.error(`[CancellationTimeout] Failed to auto-cancel order ${order.id}:`, err);
+      } finally {
+        releaseOrderLock(order.id);
+      }
+    }
+  }
+}
+
+setInterval(() => {
+  try {
+    processCancellationTimeouts();
+  } catch (err) {
+    console.error('[CancellationTimeout] Job error:', err);
+  }
+}, 60 * 1000).unref?.();
 
 // Deposit Escrow for Order - Must strictly go through the double-entry ledger engine
 app.post('/api/payments/escrow/deposit', requireAuth, rateLimit(20, 60_000), (req, res) => {
@@ -3611,21 +3897,16 @@ app.patch('/api/payments/methods/:id/default', requireAuth, (req, res) => {
 // ==========================================
 
 // Reset Financial Ledger and Workstream Data to Pristine Clean State
-app.post('/api/admin/finance/reset-clean', requireRole(['admin', 'super_admin']), (req, res) => {
+app.post('/api/admin/finance/reset-clean', requireRole(['admin', 'super_admin']), async (req, res) => {
   try {
-    financeLedger.resetToCleanState();
-    orders.length = 0;
+    await cleanAllStoreData();
     orderIndex.clear();
-    messages.length = 0;
     messageIndex.clear();
-    workstreamOffers.length = 0;
-    customInvoices.length = 0;
-    disputes.length = 0;
-    postgresStore.saveOrders(orders);
-    postgresStore.saveMessages(messages);
-    postgresStore.saveOffers(workstreamOffers);
-    saveCustomInvoicesToDisk();
-    res.json({ success: true, message: 'Financial ledger and workstream data reset to pristine clean state.' });
+    orderStateLocks.clear();
+    releaseCompletedOrders.clear();
+    refundCompletedOrders.clear();
+    requestKeyCache.clear();
+    res.json({ success: true, message: 'All demo and runtime data reset to pristine clean state.' });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
   }
@@ -4105,8 +4386,8 @@ app.post('/api/admin/categories', requireAdmin, (req, res) => {
 
   registerAuditLog({
     id: 'log_' + Date.now(),
-    actor: 'Admin Chief',
-    role: 'super_admin',
+    actor: adminActor(req),
+    role: (req as any).authenticatedUser?.role || 'admin',
     action: 'CATEGORY_CREATED',
     target: `Category: ${name}`,
     details: `Created new main category "${name}" with slug /${catSlug}`,
@@ -4132,8 +4413,8 @@ app.post('/api/admin/categories/bulk-delete', requireAdmin, (req, res) => {
 
   registerAuditLog({
     id: 'log_' + Date.now(),
-    actor: 'Admin Chief',
-    role: 'super_admin',
+    actor: adminActor(req),
+    role: (req as any).authenticatedUser?.role || 'admin',
     action: 'CATEGORIES_BULK_DELETED',
     target: 'Marketplace Categories',
     details: `Bulk deleted ${categoryIds.length} categories and ${subcategoryPairs.length} subcategories`,
@@ -4152,8 +4433,8 @@ app.patch('/api/admin/categories/:id', requireAdmin, (req, res) => {
 
   registerAuditLog({
     id: 'log_' + Date.now(),
-    actor: 'Admin Chief',
-    role: 'super_admin',
+    actor: adminActor(req),
+    role: (req as any).authenticatedUser?.role || 'admin',
     action: 'CATEGORY_UPDATED',
     target: `Category: ${cat.name}`,
     details: `Updated category name/slug/status for ${cat.name}`,
@@ -4170,8 +4451,8 @@ app.patch('/api/admin/categories/:id/toggle', requireAdmin, (req, res) => {
 
   registerAuditLog({
     id: 'log_' + Date.now(),
-    actor: 'Admin Chief',
-    role: 'super_admin',
+    actor: adminActor(req),
+    role: (req as any).authenticatedUser?.role || 'admin',
     action: cat.enabled ? 'CATEGORY_ENABLED' : 'CATEGORY_DISABLED',
     target: `Category: ${cat.name}`,
     details: `Toggled status of category ${cat.name} to ${cat.enabled ? 'Enabled' : 'Disabled'}`,
@@ -4189,8 +4470,8 @@ app.delete('/api/admin/categories/:id', requireAdmin, (req, res) => {
 
   registerAuditLog({
     id: 'log_' + Date.now(),
-    actor: 'Admin Chief',
-    role: 'super_admin',
+    actor: adminActor(req),
+    role: (req as any).authenticatedUser?.role || 'admin',
     action: 'CATEGORY_DELETED',
     target: `Category: ${deleted.name}`,
     details: `Deleted category ${deleted.name}`,
@@ -4217,8 +4498,8 @@ app.post('/api/admin/categories/:id/subcategories', requireAdmin, (req, res) => 
 
   registerAuditLog({
     id: 'log_' + Date.now(),
-    actor: 'Admin Chief',
-    role: 'super_admin',
+    actor: adminActor(req),
+    role: (req as any).authenticatedUser?.role || 'admin',
     action: 'SUBCATEGORY_CREATED',
     target: `Subcategory: ${name} (under ${cat.name})`,
     details: `Created subcategory ${name}`,
@@ -4239,8 +4520,8 @@ app.patch('/api/admin/categories/:id/subcategories/:subId', requireAdmin, (req, 
 
   registerAuditLog({
     id: 'log_' + Date.now(),
-    actor: 'Admin Chief',
-    role: 'super_admin',
+    actor: adminActor(req),
+    role: (req as any).authenticatedUser?.role || 'admin',
     action: 'SUBCATEGORY_UPDATED',
     target: `Subcategory: ${sub.name}`,
     details: `Updated subcategory under ${cat.name}`,
@@ -4259,8 +4540,8 @@ app.patch('/api/admin/categories/:id/subcategories/:subId/toggle', requireAdmin,
 
   registerAuditLog({
     id: 'log_' + Date.now(),
-    actor: 'Admin Chief',
-    role: 'super_admin',
+    actor: adminActor(req),
+    role: (req as any).authenticatedUser?.role || 'admin',
     action: sub.enabled ? 'SUBCATEGORY_ENABLED' : 'SUBCATEGORY_DISABLED',
     target: `Subcategory: ${sub.name}`,
     details: `Toggled subcategory status to ${sub.enabled ? 'Enabled' : 'Disabled'}`,
@@ -4280,8 +4561,8 @@ app.delete('/api/admin/categories/:id/subcategories/:subId', requireAdmin, (req,
 
   registerAuditLog({
     id: 'log_' + Date.now(),
-    actor: 'Admin Chief',
-    role: 'super_admin',
+    actor: adminActor(req),
+    role: (req as any).authenticatedUser?.role || 'admin',
     action: 'SUBCATEGORY_DELETED',
     target: `Subcategory: ${deletedSub.name}`,
     details: `Deleted subcategory from ${cat.name}`,
@@ -4316,6 +4597,7 @@ function recalculateUserRating(userId: string) {
   } else {
     targetUser.rating = 0;
   }
+  saveUsersToPostgres();
 }
 
 function sanitizePublicReview(r: Review): Review {
@@ -4443,7 +4725,7 @@ app.post('/api/reviews', requireAuth, (req, res) => {
     type: 'review',
     title: 'New Review Received',
     message: `${caller.name} left a ${numRating}-star review for order "${order.title}".`,
-    link: `/orders/${order.id}`,
+    link: `/messages/${order.id}`,
     dedupKey: `review_${newReview.id}`,
     actorId: caller.id
   });
@@ -4594,9 +4876,39 @@ app.get('/api/audit-logs', requireRole(['admin', 'super_admin']), (req, res) => 
 // User Email Notifications API
 app.get('/api/user-emails/:userId', requireAuth, (req, res) => {
   const caller = (req as any).authenticatedUser;
-  const isAdminOrStaff = caller.role === 'admin' || caller.role === 'super_admin' || caller.role === 'support';
-  if (caller.id !== req.params.userId && !isAdminOrStaff) return res.status(403).json({ error: 'Forbidden' });
-  const userList = userEmails.filter(e => e.userId === req.params.userId);
+  const targetUser = users.find(u => u.id === req.params.userId);
+  if (!targetUser) return res.status(404).json({ error: 'User not found' });
+
+  const isSelf = caller.id === req.params.userId;
+  const isSuperAdmin = caller.role === 'super_admin';
+  const isAdmin = caller.role === 'admin';
+  const isSupport = caller.role === 'support';
+  const isTargetAdmin = targetUser.role === 'admin' || targetUser.role === 'super_admin';
+
+  // CRITICAL PRIVILEGE ESCALATION FIX:
+  // Support staff CANNOT inspect any administrator or super_admin emails (prevents escalation)!
+  // Regular admins cannot inspect super_admin emails.
+  if (!isSelf) {
+    if (isSupport && isTargetAdmin) {
+      return res.status(403).json({ error: 'Forbidden: Support staff cannot inspect administrator emails.' });
+    }
+    if (isAdmin && targetUser.role === 'super_admin') {
+      return res.status(403).json({ error: 'Forbidden: Only super_admin can inspect super_admin emails.' });
+    }
+    if (!isAdmin && !isSuperAdmin && !isSupport) {
+      return res.status(403).json({ error: 'Forbidden: Insufficient privileges.' });
+    }
+  }
+
+  // Redact any 6-digit verification codes from body or snippet in user-emails
+  const userList = userEmails
+    .filter(e => e.userId === req.params.userId)
+    .map(e => ({
+      ...e,
+      snippet: e.snippet ? e.snippet.replace(/\b\d{6}\b/g, '******') : '',
+      body: e.body ? e.body.replace(/\b\d{6}\b/g, '******') : ''
+    }));
+
   res.json(userList);
 });
 
@@ -4652,7 +4964,6 @@ if (!fs.existsSync(WORKSTREAM_UPLOADS_DIR)) {
 }
 
 const WORKSTREAM_FILE_URL_PREFIX = '/api/workstream/files/';
-const WORKSTREAM_UPLOAD_INDEX_FILE = path.join(DATA_DIR, 'workstream_uploads.json');
 const WORKSTREAM_MAX_UPLOAD_BYTES = 25 * 1024 * 1024; // 25 MB
 const WORKSTREAM_ABANDONED_UPLOAD_TTL_MS = 24 * 3600 * 1000;
 // Allowed attachment types. Vectors (.svg) and code (.html, .js, .ts, etc.) are fully supported without restriction.
@@ -4666,24 +4977,11 @@ const WORKSTREAM_ALLOWED_EXTENSIONS = new Set([
 // .html is deliberately NOT inline: it would run uploaded scripts on the app origin. It is still fully downloadable.
 const WORKSTREAM_INLINE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.pdf', '.svg', '.txt']);
 
+
 // Upload ownership index: filename -> who uploaded it and when. Persisted so access rules and
 // abandoned-upload cleanup survive restarts.
-interface WorkstreamUploadRecord {
-  ownerId: string;
-  originalName?: string;
-  mime?: string;
-  size?: number;
-  createdAt: string;
-  sha256?: string;
-}
-let workstreamUploadIndex: Record<string, WorkstreamUploadRecord> = {};
-try {
-  if (fs.existsSync(WORKSTREAM_UPLOAD_INDEX_FILE)) {
-    workstreamUploadIndex = JSON.parse(fs.readFileSync(WORKSTREAM_UPLOAD_INDEX_FILE, 'utf-8')) || {};
-  }
-} catch (err) {
-  console.error('Failed to load workstream upload index:', err);
-}
+// (Old implementation removed in favor of atomic helper)
+
 
 // (Old implementation removed in favor of atomic helper)
 
@@ -4790,6 +5088,7 @@ function cleanupAbandonedWorkstreamUploads() {
 
     try { fs.unlinkSync(path.join(WORKSTREAM_UPLOADS_DIR, filename)); } catch { /* already gone */ }
     delete workstreamUploadIndex[filename];
+    postgresStore.deleteUploadRecord(filename).catch(console.error);
     changed = true;
   }
 
@@ -4967,9 +5266,6 @@ app.post('/api/workstream/upload', requireAuth, rateLimit(5, 60_000), express.ra
     try { decodedName = decodeURIComponent(rawName); } catch { decodedName = rawName; }
     const safeBase = path.basename(decodedName).replace(/[^a-zA-Z0-9._-]/g, '_') || 'file';
     const ext = path.extname(safeBase).toLowerCase();
-    if (ext && !WORKSTREAM_ALLOWED_EXTENSIONS.has(ext)) {
-      WORKSTREAM_ALLOWED_EXTENSIONS.add(ext);
-    }
     const nameWithoutExt = path.basename(safeBase, path.extname(safeBase));
     const storedFilename = `${Date.now()}_${randomUUID().slice(0, 8)}_${nameWithoutExt}${ext}`;
 
@@ -5083,7 +5379,7 @@ app.post('/api/messages', requireAuth, (req, res) => {
       type: 'message',
       title: 'New Message',
       message: `${caller.name} sent a message regarding order "${order.title}".`,
-      link: `/orders/${order.id}`,
+      link: `/messages/${order.id}`,
       dedupKey: `msg_${newMsg.id}`,
       actorId: caller.id
     });
@@ -5146,7 +5442,7 @@ app.get('/api/admin/messages/threads', requireAdmin, (req, res) => {
   res.json(threads);
 });
 
-app.post('/api/gigs', requireAuth, (req, res) => {
+app.post('/api/gigs', requireAuth, async (req, res) => {
   const authUserId = (req as any).authenticatedUserId;
   const caller = (req as any).authenticatedUser || users.find(u => u.id === authUserId);
   if (!caller || caller.status !== 'active') return res.status(403).json({ error: 'Account is not active' });
@@ -5189,10 +5485,18 @@ app.post('/api/gigs', requireAuth, (req, res) => {
     extras: req.body.extras || []
   };
   gigs.unshift(newGig);
+  try {
+    await postgresStore.saveGigs(gigs);
+  } catch (err) {
+    console.error('[CreateGig] Failed to persist:', err);
+    const idx = gigs.findIndex(g => g.id === newGig.id);
+    if (idx !== -1) gigs.splice(idx, 1);
+    return res.status(500).json({ error: 'Could not save. Please try again.' });
+  }
   res.json(newGig);
 });
 
-app.post('/api/projects', requireAuth, (req, res) => {
+app.post('/api/projects', requireAuth, async (req, res) => {
   const authUserId = (req as any).authenticatedUserId;
   const caller = (req as any).authenticatedUser || users.find(u => u.id === authUserId);
   if (!caller || caller.status !== 'active') return res.status(403).json({ error: 'Account is not active' });
@@ -5225,7 +5529,14 @@ app.post('/api/projects', requireAuth, (req, res) => {
     featured: false
   };
   projects.unshift(newProj);
-  postgresStore.saveProjects(projects);
+  try {
+    await postgresStore.saveProjects(projects);
+  } catch (err) {
+    console.error('[CreateProject] Failed to persist:', err);
+    const idx = projects.findIndex(p => p.id === newProj.id);
+    if (idx !== -1) projects.splice(idx, 1);
+    return res.status(500).json({ error: 'Could not save. Please try again.' });
+  }
   res.json(newProj);
 });
 
@@ -5289,8 +5600,8 @@ app.patch('/api/admin/projects/:id', requireAdmin, (req, res) => {
 
   registerAuditLog({
     id: 'log_' + Date.now(),
-    actor: 'Admin Chief',
-    role: 'super_admin',
+    actor: adminActor(req),
+    role: (req as any).authenticatedUser?.role || 'admin',
     action: 'PROJECT_EDITED',
     target: `Project "${p.title}"`,
     details: `Updated project parameters, category, budget, or moderation status`,
@@ -5310,8 +5621,8 @@ app.patch('/api/admin/projects/:id/status', requireAdmin, (req, res) => {
 
   registerAuditLog({
     id: 'log_' + Date.now(),
-    actor: 'Admin Chief',
-    role: 'super_admin',
+    actor: adminActor(req),
+    role: (req as any).authenticatedUser?.role || 'admin',
     action: `PROJECT_STATUS_${req.body.status.toUpperCase()}`,
     target: `Project "${p.title}"`,
     details: `Changed project status from "${oldStatus}" to "${req.body.status}"`,
@@ -5330,8 +5641,8 @@ app.patch('/api/admin/projects/:id/feature', requireAdmin, (req, res) => {
 
   registerAuditLog({
     id: 'log_' + Date.now(),
-    actor: 'Admin Chief',
-    role: 'super_admin',
+    actor: adminActor(req),
+    role: (req as any).authenticatedUser?.role || 'admin',
     action: p.featured ? 'PROJECT_FEATURED' : 'PROJECT_UNFEATURED',
     target: `Project "${p.title}"`,
     details: `${p.featured ? 'Featured' : 'Unfeatured'} project on platform homepage & listings`,
@@ -5351,8 +5662,8 @@ app.delete('/api/admin/projects/:id', requireAdmin, (req, res) => {
 
   registerAuditLog({
     id: 'log_' + Date.now(),
-    actor: 'Admin Chief',
-    role: 'super_admin',
+    actor: adminActor(req),
+    role: (req as any).authenticatedUser?.role || 'admin',
     action: 'PROJECT_DELETED',
     target: `Project "${deleted.title}"`,
     details: `Permanently removed project #${deleted.id} by ${deleted.buyerName}`,
@@ -5382,10 +5693,12 @@ app.patch('/api/admin/gigs/:id', requireAdmin, (req, res) => {
   if (req.body.moderationStatus !== undefined) g.moderationStatus = req.body.moderationStatus;
   if (req.body.moderationNotes !== undefined) g.moderationNotes = req.body.moderationNotes;
 
+  saveGigsToPostgres();
+
   registerAuditLog({
     id: 'log_' + Date.now(),
-    actor: 'Admin Chief',
-    role: 'super_admin',
+    actor: adminActor(req),
+    role: (req as any).authenticatedUser?.role || 'admin',
     action: 'GIG_EDITED',
     target: `Gig "${g.title}"`,
     details: `Updated gig specifications, pricing, delivery, or moderation verdict: "${g.moderationStatus || 'none'}"`,
@@ -5401,11 +5714,12 @@ app.patch('/api/admin/gigs/:id/status', requireAdmin, (req, res) => {
 
   const oldStatus = g.status;
   g.status = req.body.status;
+  saveGigsToPostgres();
 
   registerAuditLog({
     id: 'log_' + Date.now(),
-    actor: 'Admin Chief',
-    role: 'super_admin',
+    actor: adminActor(req),
+    role: (req as any).authenticatedUser?.role || 'admin',
     action: `GIG_STATUS_${req.body.status.toUpperCase()}`,
     target: `Gig "${g.title}"`,
     details: `Changed service status from "${oldStatus}" to "${req.body.status}"`,
@@ -5420,11 +5734,12 @@ app.patch('/api/admin/gigs/:id/feature', requireAdmin, (req, res) => {
   if (!g) return res.status(404).json({ error: 'Gig/Service not found' });
 
   g.featured = !g.featured;
+  saveGigsToPostgres();
 
   registerAuditLog({
     id: 'log_' + Date.now(),
-    actor: 'Admin Chief',
-    role: 'super_admin',
+    actor: adminActor(req),
+    role: (req as any).authenticatedUser?.role || 'admin',
     action: g.featured ? 'GIG_FEATURED' : 'GIG_UNFEATURED',
     target: `Gig "${g.title}"`,
     details: `${g.featured ? 'Featured' : 'Unfeatured'} freelancer service on marketplace home & listings`,
@@ -5440,11 +5755,12 @@ app.delete('/api/admin/gigs/:id', requireAdmin, (req, res) => {
 
   const deleted = gigs[index];
   gigs.splice(index, 1);
+  saveGigsToPostgres();
 
   registerAuditLog({
     id: 'log_' + Date.now(),
-    actor: 'Admin Chief',
-    role: 'super_admin',
+    actor: adminActor(req),
+    role: (req as any).authenticatedUser?.role || 'admin',
     action: 'GIG_DELETED',
     target: `Gig "${deleted.title}"`,
     details: `Permanently deleted freelancer gig #${deleted.id} by ${deleted.freelancerName}`,
@@ -5465,6 +5781,7 @@ app.delete('/api/gigs/:id', requireAuth, (req, res) => {
   }
 
   gigs.splice(index, 1);
+  saveGigsToPostgres();
 
   registerAuditLog({
     id: 'log_' + Date.now(),
@@ -5506,18 +5823,46 @@ app.patch('/api/gigs/:id', requireAuth, (req, res) => {
     g.price = newPrice;
   }
   if (req.body.deliveryDays !== undefined) g.deliveryDays = Number(req.body.deliveryDays);
-  if (req.body.status !== undefined) g.status = req.body.status;
-  if (req.body.featured !== undefined) g.featured = Boolean(req.body.featured);
-  if (req.body.moderationStatus !== undefined) g.moderationStatus = req.body.moderationStatus;
-  if (req.body.moderationNotes !== undefined) g.moderationNotes = req.body.moderationNotes;
+  if (req.body.extras !== undefined && Array.isArray(req.body.extras)) g.extras = req.body.extras;
+  if (req.body.image !== undefined && typeof req.body.image === 'string') g.image = req.body.image;
+
+  // CRITICAL SECURITY FIX: Sellers CANNOT modify moderationStatus, moderationNotes, featured, or featuredUntil
+  // These fields are strictly ignored and reserved for admin moderation or the paid /feature endpoint
+  delete req.body.moderationStatus;
+  delete req.body.moderationNotes;
+  delete req.body.featured;
+  delete req.body.featuredUntil;
+
+  // Sellers can only set status to 'published', 'paused', or 'draft'
+  if (req.body.status !== undefined) {
+    const requestedStatus = String(req.body.status).toLowerCase().trim();
+    if (!['published', 'paused', 'draft'].includes(requestedStatus)) {
+      return res.status(400).json({ error: 'Invalid status. Sellers can only set status to published, paused, or draft.' });
+    }
+
+    // A rejected or flagged gig CANNOT be approved or published by the seller
+    if (requestedStatus === 'published' && (g.moderationStatus === 'rejected' || g.moderationStatus === 'flagged')) {
+      return res.status(400).json({ error: 'This gig has been rejected or flagged by moderators and cannot be published until reviewed and approved by an administrator.' });
+    }
+
+    const activeSettings = siteSettings.getSettings();
+    if (requestedStatus === 'published' && activeSettings.marketplace?.gigModerationRequired && g.moderationStatus !== 'approved') {
+      g.status = 'pending';
+      g.moderationStatus = 'pending';
+    } else {
+      g.status = requestedStatus as any;
+    }
+  }
+
+  saveGigsToPostgres();
 
   registerAuditLog({
     id: 'log_' + Date.now(),
-    actor: 'Freelancer / User',
-    role: 'freelancer',
+    actor: caller.name,
+    role: caller.role,
     action: 'GIG_UPDATED',
     target: `Gig "${g.title}"`,
-    details: `Updated gig details/status to "${g.status}"`,
+    details: `Updated gig details/status to "${g.status}" (moderation: ${g.moderationStatus || 'approved'})`,
     timestamp: new Date().toLocaleString()
   });
 
@@ -5532,15 +5877,46 @@ app.patch('/api/gigs/:id/feature', requireAuth, (req, res) => {
     return res.status(403).json({ error: 'Forbidden: You can only feature your own gigs.' });
   }
 
-  g.featured = !g.featured;
+  // Check if actively featured
+  if (g.featured && g.featuredUntil && new Date(g.featuredUntil) > new Date()) {
+    return res.status(400).json({ error: 'Gig is already actively featured.' });
+  }
+
+  const activeSettings = siteSettings.getSettings();
+  const fee = activeSettings.marketplace.featuredGigFee;
+  if (!fee || fee <= 0) {
+    return res.status(500).json({ error: 'Feature fee is not configured.' });
+  }
+
+  // Charge fee via ledger
+  const idempotencyKey = `feat_${g.id}_${Date.now()}`;
+  try {
+    financeLedger.postJournal({
+      reference: `Featured Gig: ${g.id}`,
+      description: `Feature fee for gig: ${g.title}`,
+      eventType: 'ADMIN_ADJUSTMENT_DEBIT',
+      idempotencyKey,
+      actor: caller.name,
+      entries: [
+        { accountCode: '2020', accountName: 'Freelancer Wallets Payable', debit: fee, credit: 0, currency: 'USD', description: 'Feature fee', userId: caller.id },
+        { accountCode: '4010', accountName: 'Marketplace Platform Commission Fee', debit: 0, credit: fee, currency: 'USD', description: `Featured gig revenue: ${g.title}` }
+      ]
+    });
+  } catch (err: any) {
+    return res.status(400).json({ error: err.message });
+  }
+
+  g.featured = true;
+  g.featuredUntil = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+  saveGigsToPostgres();
 
   registerAuditLog({
     id: 'log_' + Date.now(),
-    actor: 'Freelancer / User',
+    actor: caller.name,
     role: 'freelancer',
-    action: g.featured ? 'GIG_FEATURED' : 'GIG_UNFEATURED',
+    action: 'GIG_FEATURED',
     target: `Gig "${g.title}"`,
-    details: `${g.featured ? 'Featured' : 'Unfeatured'} gig on marketplace listings`,
+    details: `Featured gig for 7 days. Fee: $${fee}`,
     timestamp: new Date().toLocaleString()
   });
 
@@ -5722,6 +6098,7 @@ async function processProposalAccept(req: any, res: any) {
 
       const offerIdx = workstreamOffers.findIndex(o => o.id === offer.id);
       if (offerIdx !== -1) workstreamOffers.splice(offerIdx, 1);
+      postgresStore.saveOffers(workstreamOffers).catch(err => console.error('[OfferRollback] Failed to persist:', err));
 
       for (let i = messages.length - 1; i >= 0; i--) {
         if (messages[i].orderId === order.id) {
@@ -6060,6 +6437,26 @@ function postOfferMessage(order: Order, offer: WorkstreamOffer, sender: { id: st
   recordMessage(msg);
   postgresStore.saveMessages(messages);
   broadcastMessage(msg, order.id);
+
+  const recipientIds: string[] = [];
+  if (sender?.id) {
+    const other = sender.id === order.buyerId ? order.sellerId : order.buyerId;
+    if (other) recipientIds.push(other);
+  } else {
+    if (order.buyerId) recipientIds.push(order.buyerId);
+    if (order.sellerId && order.sellerId !== order.buyerId) recipientIds.push(order.sellerId);
+  }
+  for (const userId of recipientIds) {
+    createNotification({
+      userId,
+      type: 'offer',
+      title: 'New Offer Activity',
+      message: text,
+      link: `/messages/${order.id}`,
+      dedupKey: `offer_${action}_${msg.id}`,
+      actorId: sender?.id
+    });
+  }
 }
 
 function offerCaller(req: Request) {
@@ -6106,7 +6503,7 @@ app.post('/api/orders/:id/offers', requireAuth, rateLimit(20, 60_000), (req, res
     if (!order) return res.status(404).json({ error: 'Order not found' });
     // Only the order's seller may raise proposals, invoices or deposit requests. Staff cannot raise them on a seller's behalf.
     if (caller.id !== order.sellerId) return res.status(403).json({ error: 'Only the seller of this workstream can send this.' });
-    if (order.status === 'cancelled') return res.status(409).json({ error: 'Cannot send offers on a cancelled order.' });
+    if (order.status === 'cancelled' && order.orderType !== 'gig' && !order.gigOrderId) return res.status(409).json({ error: 'Cannot send offers on a cancelled order.' });
 
     const kind = req.body?.kind as WorkstreamOfferKind;
     if (!['proposal', 'invoice', 'deposit'].includes(kind)) return res.status(400).json({ error: 'Invalid type.' });
@@ -6268,7 +6665,7 @@ app.post('/api/offers/:id/:action(accept|decline|cancel)', requireAuth, rateLimi
     // Accepting / declining belongs to the buyer only (not staff, not the seller).
     if (caller.id !== order.buyerId) return res.status(403).json({ error: 'Only the buyer can respond to this.' });
 
-    if (order.status === 'cancelled') {
+    if (order.status === 'cancelled' && order.orderType !== 'gig' && !order.gigOrderId) {
       return res.status(400).json({ error: 'Cannot accept offers on a cancelled order (escrow has already been refunded).' });
     }
     if (order.status === 'completed' && offer.kind === 'invoice') {
@@ -6301,6 +6698,7 @@ app.post('/api/offers/:id/:action(accept|decline|cancel)', requireAuth, rateLimi
     const protectionEnd = new Date(Date.now() + siteSettings.getSettings().commission.escrowProtectionDays * 86400000).toISOString().split('T')[0];
     const isInitialFunding = !orderHasEscrow(order.id);
     const isFollowOnAfterCompletion = orderHasEscrow(order.id) && (order.status === 'completed' || getActiveEscrowRemaining(order) === 0);
+    const isCancelledGigFollowOn = order.status === 'cancelled' && (order.orderType === 'gig' || order.gigOrderId);
 
     if (offer.kind === 'invoice') {
       const validationError = validateOrderReleasePreconditions(order, false, true);
@@ -6407,7 +6805,7 @@ app.post('/api/offers/:id/:action(accept|decline|cancel)', requireAuth, rateLimi
         await postgresStore.saveOrders(orders);
         return res.status(400).json({ error: fundingErr.message || 'Failed to fund escrow for offer.' });
       }
-    } else if (isFollowOnAfterCompletion) {
+    } else if (isFollowOnAfterCompletion || isCancelledGigFollowOn) {
       // PeoplePerHour Follow-On Proposal / Deposit accepted in the same WorkStream after previous invoice was paid
       // Correct model: New Order in same Workspace
       const newOrderId = 'ord_' + randomUUID().slice(0, 12);
@@ -6540,8 +6938,8 @@ app.patch('/api/admin/proposals/:id', requireAdmin, async (req, res) => {
 
   registerAuditLog({
     id: 'log_' + Date.now(),
-    actor: 'Admin Chief',
-    role: 'super_admin',
+    actor: adminActor(req),
+    role: (req as any).authenticatedUser?.role || 'admin',
     action: 'PROPOSAL_EDITED',
     target: `Proposal #${p.id}`,
     details: `Updated bid parameters ($${p.bidAmount}), delivery days (${p.deliveryDays}d), or status (${p.status}) for freelancer ${p.freelancerName}`,
@@ -6560,8 +6958,8 @@ app.patch('/api/admin/proposals/:id/status', requireAdmin, async (req, res) => {
 
   registerAuditLog({
     id: 'log_' + Date.now(),
-    actor: 'Admin Chief',
-    role: 'super_admin',
+    actor: adminActor(req),
+    role: (req as any).authenticatedUser?.role || 'admin',
     action: `PROPOSAL_STATUS_${req.body.status.toUpperCase()}`,
     target: `Proposal #${p.id}`,
     details: `Changed proposal status from "${oldStatus}" to "${req.body.status}" for freelancer ${p.freelancerName}`,
@@ -6589,8 +6987,8 @@ app.delete('/api/admin/proposals/:id', requireAdmin, async (req, res) => {
 
   registerAuditLog({
     id: 'log_' + Date.now(),
-    actor: 'Admin Chief',
-    role: 'super_admin',
+    actor: adminActor(req),
+    role: (req as any).authenticatedUser?.role || 'admin',
     action: 'PROPOSAL_DELETED',
     target: `Proposal #${deleted.id}`,
     details: `Permanently removed proposal #${deleted.id} by freelancer ${deleted.freelancerName} from project #${deleted.projectId}`,
@@ -6604,64 +7002,97 @@ app.delete('/api/admin/proposals/:id', requireAdmin, async (req, res) => {
 app.patch('/api/admin/users/:id', requireAdmin, (req, res) => {
   const u = users.find(user => user.id === req.params.id);
   if (!u) return res.status(404).json({ error: 'User not found' });
-  
-  if (req.body.name !== undefined) u.name = escapeHtml(String(req.body.name));
-  if (req.body.email !== undefined) u.email = escapeHtml(String(req.body.email));
+  const caller = (req as any).authenticatedUser;
+
+  // CRITICAL GUARDRAIL: Only super_admin can edit a super_admin account!
+  if (u.role === 'super_admin' && caller?.role !== 'super_admin') {
+    return res.status(403).json({ error: 'Forbidden: Regular administrators cannot modify a super_admin account.' });
+  }
+
+  // CRITICAL GUARDRAIL: Only super_admin can change or promote user roles!
   if (req.body.role !== undefined) {
-    const caller = (req as any).authenticatedUser;
-    if (req.body.role === 'super_admin' && caller?.role !== 'super_admin') {
-      return res.status(403).json({ error: 'Forbidden: Only super_admin can set super_admin role.' });
+    if (caller?.role !== 'super_admin') {
+      return res.status(403).json({ error: 'Forbidden: Only super_admin can modify or assign roles.' });
     }
-    if (!['buyer', 'freelancer', 'admin', 'super_admin', 'support', 'moderator'].includes(req.body.role)) {
-      return res.status(400).json({ error: 'Invalid role.' });
+    const ALLOWED_ROLES = ['buyer', 'freelancer', 'admin', 'super_admin', 'support', 'moderator'];
+    if (!ALLOWED_ROLES.includes(req.body.role)) {
+      return res.status(400).json({ error: `Invalid role. Allowed roles: ${ALLOWED_ROLES.join(', ')}` });
     }
     u.role = req.body.role;
   }
+
+  // CRITICAL GUARDRAIL: Only super_admin can edit another admin's email or identity
+  if (req.body.email !== undefined) {
+    if (u.role === 'admin' && caller?.role !== 'super_admin' && caller?.id !== u.id) {
+      return res.status(403).json({ error: 'Forbidden: Only super_admin can change another administrator’s email.' });
+    }
+    u.email = escapeHtml(String(req.body.email));
+  }
+
+  if (req.body.name !== undefined) u.name = escapeHtml(String(req.body.name));
   if (req.body.title !== undefined) u.title = escapeHtml(String(req.body.title));
   if (req.body.bio !== undefined) u.bio = escapeHtml(String(req.body.bio));
   if (req.body.skills !== undefined) u.skills = Array.isArray(req.body.skills) ? req.body.skills : req.body.skills.split(',').map((s: string) => s.trim()).filter(Boolean);
   if (req.body.hourlyRate !== undefined) {
-      const hr = Number(req.body.hourlyRate);
-      if (!Number.isFinite(hr) || hr < 0) return res.status(400).json({ error: 'Invalid hourly rate.' });
-      u.hourlyRate = hr;
+    const hr = Number(req.body.hourlyRate);
+    if (!Number.isFinite(hr) || hr < 0) return res.status(400).json({ error: 'Invalid hourly rate.' });
+    u.hourlyRate = hr;
   }
-  // walletBalance is ledger-controlled and intentionally ignored here (use /api/admin/finance/adjustments)
   if (req.body.verified !== undefined) u.verified = Boolean(req.body.verified);
+
   if (req.body.status !== undefined) {
-      if (!['active', 'frozen', 'restricted'].includes(req.body.status)) {
-         return res.status(400).json({ error: 'Invalid status.' });
-      }
-      u.status = req.body.status;
+    const ALLOWED_STATUSES = ['active', 'frozen', 'restricted', 'suspended', 'deactivated'];
+    const newStatus = String(req.body.status).toLowerCase().trim();
+    if (!ALLOWED_STATUSES.includes(newStatus)) {
+      return res.status(400).json({ error: `Invalid status. Allowed statuses: ${ALLOWED_STATUSES.join(', ')}` });
+    }
+    if (u.role === 'super_admin' && caller?.role !== 'super_admin') {
+      return res.status(403).json({ error: 'Forbidden: Only super_admin can change a super_admin status.' });
+    }
+    u.status = newStatus as any;
   }
 
   registerAuditLog({
     id: 'log_' + Date.now(),
-    actor: 'Admin Chief',
-    role: 'super_admin',
+    actor: caller?.name || adminActor(req),
+    role: caller?.role || 'admin',
     action: 'USER_PROFILE_EDITED',
     target: `User ${u.name}`,
     details: `Updated profile details and parameters for ${u.email}`,
     timestamp: new Date().toLocaleString()
   });
 
+  saveUsersToPostgres();
   res.json(safeUser(u));
 });
 
 app.patch('/api/admin/users/:id/status', requireAdmin, (req, res) => {
   const u = users.find(user => user.id === req.params.id);
   if (!u) return res.status(404).json({ error: 'User not found' });
-  
-  const oldStatus = u.status;
-  u.status = req.body.status;
-
   const admin = (req as any).authenticatedUser;
+
+  // CRITICAL GUARDRAIL: Validate status against strict allowed set
+  const ALLOWED_STATUSES = ['active', 'frozen', 'restricted', 'suspended', 'deactivated'];
+  const newStatus = String(req.body?.status || '').toLowerCase().trim();
+  if (!newStatus || !ALLOWED_STATUSES.includes(newStatus)) {
+    return res.status(400).json({ error: `Invalid status. Allowed statuses: ${ALLOWED_STATUSES.join(', ')}` });
+  }
+
+  // CRITICAL GUARDRAIL: Only super_admin can change super_admin status
+  if (u.role === 'super_admin' && admin?.role !== 'super_admin') {
+    return res.status(403).json({ error: 'Forbidden: Only a super_admin can change a super_admin account status.' });
+  }
+
+  const oldStatus = u.status;
+  u.status = newStatus as any;
+
   registerAuditLog({
     id: 'log_' + Date.now(),
-    actor: admin?.name || 'Admin',
+    actor: admin?.name || adminActor(req),
     role: admin?.role || 'admin',
-    action: `USER_STATUS_${req.body.status.toUpperCase()}`,
+    action: `USER_STATUS_${newStatus.toUpperCase()}`,
     target: `User ${u.name}`,
-    details: `Changed account status from ${oldStatus} to ${req.body.status}`,
+    details: `Changed account status from ${oldStatus} to ${newStatus}`,
     timestamp: new Date().toLocaleString()
   });
 
@@ -6675,10 +7106,11 @@ app.patch('/api/admin/users/:id/status', requireAdmin, (req, res) => {
   }
 
   // Notify user via chat message and email notification if suspended, restricted, or deactivated
-  if (req.body.status === 'suspended' || req.body.status === 'restricted' || req.body.status === 'deactivated') {
-    notifyUserOnAdminAction(u, req.body.status, req.body.notes);
+  if (newStatus === 'suspended' || newStatus === 'restricted' || newStatus === 'deactivated') {
+    notifyUserOnAdminAction(u, newStatus, req.body.notes);
   }
 
+  saveUsersToPostgres();
   res.json(safeUser(u));
 });
 
@@ -6737,6 +7169,7 @@ app.patch('/api/admin/users/:id/verify', requireAdmin, (req, res) => {
     timestamp: new Date().toLocaleString()
   });
 
+  saveUsersToPostgres();
   res.json(safeUser(u));
 });
 
@@ -6765,6 +7198,9 @@ app.delete('/api/admin/users/:id', requireAdmin, (req, res) => {
   projects.length = 0;
   projects.push(...remainingProjects);
   postgresStore.saveProjects(projects);
+
+  saveUsersToPostgres();
+  saveGigsToPostgres();
 
   const admin = (req as any).authenticatedUser;
   registerAuditLog({
@@ -6893,6 +7329,36 @@ function broadcastMessage(message: Message, orderId: string) {
   }
 }
 
+  function notifyOrderParties(orderId: string, action: string, text: string, msgId: string) {
+    const order = orders.find(o => o.id === orderId);
+    if (!order) return;
+    const map: Record<string, { to: ('buyer'|'seller')[]; title: string }> = {
+      order_created:        { to: ['seller'],           title: 'New Order Received' },
+      escrow_funded:        { to: ['seller'],           title: 'Order Funded' },
+      deliverable_approved: { to: ['seller'],           title: 'Delivery Approved' },
+      revision_requested:   { to: ['seller'],           title: 'Revision Requested' },
+      revision_resolved:    { to: ['buyer'],            title: 'Revision Delivered' },
+      escrow_released:      { to: ['seller'],           title: 'Payment Released' },
+      escrow_refunded:      { to: ['buyer'],            title: 'Refund Issued' },
+      order_completed:      { to: ['buyer', 'seller'],  title: 'Order Completed' },
+      dispute_opened:       { to: ['buyer', 'seller'],  title: 'Dispute Opened' },
+      dispute_resolved:     { to: ['buyer', 'seller'],  title: 'Dispute Resolved' },
+    };
+    const rule = map[action];
+    if (!rule) return;
+    for (const who of rule.to) {
+      const userId = who === 'buyer' ? order.buyerId : order.sellerId;
+      createNotification({
+        userId,
+        type: 'order',
+        title: rule.title,
+        message: text,
+        link: `/messages/${orderId}`,
+        dedupKey: `${action}_${msgId}_${userId}`
+      });
+    }
+  }
+
 function emitSystemEvent(orderId: string, action: string, text: string, metadata: Record<string, any> = {}) {
   const sysMsg: Message = {
     id: 'msg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
@@ -6907,6 +7373,7 @@ function emitSystemEvent(orderId: string, action: string, text: string, metadata
   recordMessage(sysMsg);
   postgresStore.saveMessages(messages);
   broadcastMessage(sysMsg, orderId);
+  notifyOrderParties(orderId, action, text, sysMsg.id);
 }
 
 function disconnectUserSockets(userId: string, reason = 'Session invalidated') {
@@ -7149,12 +7616,22 @@ app.get('/sitemap.xml', (_req, res) => {
 
 // SSR and Vite integration
 (async () => {
-  await hydrateStoreFromPostgres();
+  try {
+    await hydrateStoreFromPostgres();
+  } catch (err) {
+    console.error('[FATAL] Postgres hydration failed; refusing to start:', err);
+    process.exit(1);
+  }
   await setupSSR(app, IS_PROD, __dirname, () => ({ gigs, users, projects, categories }));
 
   const portArgIndex = process.argv.findIndex(arg => arg === '--port' || arg === '-p');
   const cliPort = portArgIndex !== -1 && process.argv[portArgIndex + 1] ? Number(process.argv[portArgIndex + 1]) : null;
   const PORT = cliPort || (process.env.PORT && process.env.PORT !== '8080' ? Number(process.env.PORT) : 3000);
+
+  process.on('unhandledRejection', (reason) => {
+    console.error('[UnhandledRejection]', reason);
+  });
+
   if (!server.listening) {
     server.on('error', (err: any) => {
       if (err.code === 'EADDRINUSE') {

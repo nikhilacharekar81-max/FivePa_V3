@@ -28,6 +28,9 @@ export const PaymentsModule: React.FC<PaymentsModuleProps> = ({
   const [isWithdrawing, setIsWithdrawing] = useState(false);
   const [withdrawSuccess, setWithdrawSuccess] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [showCodeModal, setShowCodeModal] = useState(false);
+  const [verificationCode, setVerificationCode] = useState('');
+  const [withdrawError, setWithdrawError] = useState<string | null>(null);
 
   const walletBalance = currentUser?.walletBalance ?? 0;
   const escrowLocked = orders
@@ -49,18 +52,79 @@ export const PaymentsModule: React.FC<PaymentsModuleProps> = ({
 
   const mockTransactions: TransactionItem[] = [];
 
-  const handleWithdraw = (e: React.FormEvent) => {
+  const getAuthHeader = (): Record<string, string> => {
+    const token = localStorage.getItem('token') || '';
+    return token ? { 'Authorization': `Bearer ${token}` } : {};
+  };
+
+  const handleWithdraw = async (e: React.FormEvent) => {
     e.preventDefault();
     const amt = parseFloat(withdrawAmount);
     if (isNaN(amt) || amt <= 0 || amt > walletBalance) return;
     setIsWithdrawing(true);
-    setTimeout(() => {
+    setWithdrawError(null);
+
+    try {
+      const res = await fetch('/api/auth/withdrawal/request-code', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeader()
+        }
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to dispatch verification code');
+      }
+      setShowCodeModal(true);
+      setVerificationCode('');
+    } catch (err: any) {
+      setWithdrawError(err.message || 'Error requesting verification code');
+    } finally {
       setIsWithdrawing(false);
+    }
+  };
+
+  const handleVerifyAndWithdraw = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!verificationCode || verificationCode.trim().length !== 6) {
+      setWithdrawError('Please enter the 6-digit code sent to your email.');
+      return;
+    }
+
+    const amt = parseFloat(withdrawAmount);
+    setIsWithdrawing(true);
+    setWithdrawError(null);
+
+    try {
+      const res = await fetch('/api/auth/withdrawal/verify-and-execute', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeader()
+        },
+        body: JSON.stringify({
+          amount: amt,
+          code: verificationCode.trim(),
+          method: 'Bank Transfer'
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Withdrawal verification failed');
+      }
+
+      setShowCodeModal(false);
       setWithdrawSuccess(true);
       setWithdrawAmount('');
+      setVerificationCode('');
       if (onBalanceUpdate) onBalanceUpdate();
-      setTimeout(() => setWithdrawSuccess(false), 4000);
-    }, 1000);
+      setTimeout(() => setWithdrawSuccess(false), 5000);
+    } catch (err: any) {
+      setWithdrawError(err.message || 'Withdrawal execution failed');
+    } finally {
+      setIsWithdrawing(false);
+    }
   };
 
   return (
@@ -147,10 +211,92 @@ export const PaymentsModule: React.FC<PaymentsModuleProps> = ({
         </form>
       </div>
 
+      {withdrawError && (
+        <div className="p-4 bg-rose-50 border border-rose-200 rounded-2xl text-rose-800 text-xs font-semibold flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-5 h-5 text-rose-600 shrink-0" />
+            <span>{withdrawError}</span>
+          </div>
+          <button onClick={() => setWithdrawError(null)} className="text-rose-500 hover:text-rose-800 text-xs font-bold cursor-pointer">
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {withdrawSuccess && (
         <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-2xl text-emerald-800 text-xs font-semibold flex items-center gap-2">
           <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
           <span>Withdrawal payout request submitted successfully! Your account ledger has been scheduled for bank settlement.</span>
+        </div>
+      )}
+
+      {/* Withdrawal Email Verification Modal */}
+      {showCodeModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-center text-emerald-600">
+                  <ShieldCheck className="w-5 h-5" />
+                </div>
+                <div>
+                  <h4 className="font-bold text-slate-900 text-sm">Security Verification</h4>
+                  <p className="text-[11px] text-slate-500">Authorize withdrawal of ${parseFloat(withdrawAmount).toFixed(2)}</p>
+                </div>
+              </div>
+              <button 
+                onClick={() => { setShowCodeModal(false); setWithdrawError(null); }}
+                className="text-slate-400 hover:text-slate-600 text-sm font-bold cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-600 mb-4 leading-relaxed">
+              We have dispatched a 6-digit confirmation code to your registered email address <strong>{currentUser?.email}</strong>. Enter it below to authorize this transaction.
+            </p>
+
+            <form onSubmit={handleVerifyAndWithdraw} className="space-y-4">
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                  6-Digit Verification Code
+                </label>
+                <input
+                  type="text"
+                  maxLength={6}
+                  placeholder="e.g. 123456"
+                  value={verificationCode}
+                  onChange={(e) => setVerificationCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  className="w-full px-4 py-3 bg-slate-50 border border-slate-300 rounded-xl text-center text-xl font-mono font-bold tracking-widest text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-emerald-500 focus:bg-white"
+                  autoFocus
+                />
+              </div>
+
+              {withdrawError && (
+                <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs flex items-center gap-2 font-medium">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>{withdrawError}</span>
+                </div>
+              )}
+
+              <div className="flex items-center gap-2.5 pt-2">
+                <button
+                  type="button"
+                  onClick={() => { setShowCodeModal(false); setWithdrawError(null); }}
+                  className="flex-1 py-2.5 px-4 rounded-xl border border-slate-300 text-slate-700 font-bold text-xs hover:bg-slate-50 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isWithdrawing || verificationCode.trim().length !== 6}
+                  className="flex-1 py-2.5 px-4 rounded-xl bg-emerald-600 text-white font-bold text-xs hover:bg-emerald-700 disabled:opacity-40 cursor-pointer"
+                >
+                  {isWithdrawing ? 'Verifying...' : 'Confirm Withdrawal'}
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
 

@@ -16,6 +16,12 @@ declare global {
 
 installAuthFetch();
 
+if (typeof window !== 'undefined') {
+  window.alert = (message?: any) => {
+    window.dispatchEvent(new CustomEvent('app:notify', { detail: String(message ?? '') }));
+  };
+}
+
 const initialData = window.__INITIAL_DATA__;
 const initialPath = window.location.pathname;
 const rootElement = document.getElementById('root')!;

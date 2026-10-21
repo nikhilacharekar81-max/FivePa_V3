@@ -34,6 +34,65 @@ async function run() {
   }
 
   try {
+    const { users, orders } = await import('../server/store.js');
+    const bcrypt = (await import('bcryptjs')).default;
+    if (!users.some(u => u.id === 'user_1')) {
+      users.push({
+        id: 'user_1',
+        name: 'Alex Rivera',
+        email: 'alex@workperhour.com',
+        role: 'buyer',
+        status: 'active',
+        password: bcrypt.hashSync('password123', 10),
+        sessionVersion: 1,
+        knownDevices: ['test-device-1']
+      } as any);
+    }
+    if (!users.some(u => u.id === 'user_2')) {
+      users.push({
+        id: 'user_2',
+        name: 'Elena Rostova',
+        email: 'elena@example.com',
+        role: 'freelancer',
+        status: 'active',
+        password: bcrypt.hashSync('password123', 10),
+        sessionVersion: 1,
+        knownDevices: ['test-device-2']
+      } as any);
+    }
+    if (!users.some(u => u.id === 'user_10')) {
+      users.push({
+        id: 'user_10',
+        name: 'Admin User',
+        email: 'admin@workperhour.com',
+        role: 'super_admin',
+        status: 'active',
+        password: bcrypt.hashSync('adminpassword123', 10),
+        sessionVersion: 1,
+        knownDevices: ['admin-device']
+      } as any);
+    }
+    if (!orders.some(o => o.id === 'ord_101')) {
+      orders.push({
+        id: 'ord_101',
+        buyerId: 'user_1',
+        sellerId: 'user_2',
+        amount: 500,
+        status: 'funded_in_escrow',
+        title: 'Security Test Order 101'
+      } as any);
+    }
+    if (!orders.some(o => o.id === 'ord_102')) {
+      orders.push({
+        id: 'ord_102',
+        buyerId: 'user_3',
+        sellerId: 'user_2',
+        amount: 500,
+        status: 'funded_in_escrow',
+        title: 'Security Test Order 102'
+      } as any);
+    }
+
     // 0. AUTHENTICATION SECURITY REGRESSION CHECKS (Phase 1)
     // A. Reject missing password
     const noPass = await api('/api/auth/login', { method: 'POST', body: { userId: 'user_1' } });

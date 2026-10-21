@@ -92,6 +92,97 @@ export const WorkstreamWorkspace: React.FC<WorkstreamWorkspaceProps> = ({
   const [isSubmittingDispute, setIsSubmittingDispute] = useState(false);
   const [disputeModalError, setDisputeModalError] = useState<string | null>(null);
 
+  const [isCancelRequestModalOpen, setIsCancelRequestModalOpen] = useState(false);
+  const [isRejectCancelModalOpen, setIsRejectCancelModalOpen] = useState(false);
+  const [isVeryLateModalOpen, setIsVeryLateModalOpen] = useState(false);
+  const [cancelModalReason, setCancelModalReason] = useState('Project scope changed');
+  const [cancelModalDetails, setCancelModalDetails] = useState('');
+  const [rejectModalReason, setRejectModalReason] = useState('');
+  const [veryLateReason, setVeryLateReason] = useState('');
+  const [cancelModalError, setCancelModalError] = useState<string | null>(null);
+  const [isSubmittingCancel, setIsSubmittingCancel] = useState(false);
+
+  const handleRequestCancellation = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!cancelModalReason.trim()) return;
+    setIsSubmittingCancel(true);
+    setCancelModalError(null);
+    try {
+      const token = getAuthToken();
+      const res = await fetch(`/api/orders/${order.id}/cancel-request`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({ reason: cancelModalReason.trim(), details: cancelModalDetails.trim() || undefined })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Failed to request cancellation');
+      onOrderChanged?.(data.order || null);
+      setIsCancelRequestModalOpen(false);
+      setCancelModalDetails('');
+    } catch (err: any) {
+      setCancelModalError(err.message || 'Failed to request cancellation');
+    } finally {
+      setIsSubmittingCancel(false);
+    }
+  };
+
+  const handleRespondCancellation = async (action: 'accept' | 'reject', reason?: string) => {
+    setIsSubmittingCancel(true);
+    setCancelModalError(null);
+    try {
+      const token = getAuthToken();
+      const res = await fetch(`/api/orders/${order.id}/cancel-request/respond`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({ action, reason })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Failed to respond to cancellation');
+      onOrderChanged?.(data.order || null);
+      if (action === 'reject') {
+        setIsRejectCancelModalOpen(false);
+        setRejectModalReason('');
+      }
+    } catch (err: any) {
+      setCancelModalError(err.message || 'Failed to respond');
+    } finally {
+      setIsSubmittingCancel(false);
+    }
+  };
+
+  const handleVeryLateCancellation = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!veryLateReason.trim()) return;
+    setIsSubmittingCancel(true);
+    setCancelModalError(null);
+    try {
+      const token = getAuthToken();
+      const res = await fetch('/api/payments/escrow/refund', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({ orderId: order.id, reason: veryLateReason.trim() })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Failed to cancel very late order');
+      onOrderChanged?.(data.order || null);
+      setIsVeryLateModalOpen(false);
+      setVeryLateReason('');
+    } catch (err: any) {
+      setCancelModalError(err.message || 'Failed to cancel very late order');
+    } finally {
+      setIsSubmittingCancel(false);
+    }
+  };
+
   // Real proposals / invoices / deposit requests for this workstream (server is the source of truth)
   const lastMessageId = messages.length ? messages[messages.length - 1].id : '';
   const {
@@ -549,11 +640,194 @@ export const WorkstreamWorkspace: React.FC<WorkstreamWorkspaceProps> = ({
             onStartVideoCall={() => setIsVideoCallModalOpen(true)}
             onAttachFiles={() => setActiveSubTab('files')}
             onDisputeAssistance={() => setIsDisputeModalOpen(true)}
+            onOpenCancelRequestModal={() => setIsCancelRequestModalOpen(true)}
+            onOpenRejectCancelModal={() => setIsRejectCancelModalOpen(true)}
+            onAcceptCancelRequest={() => handleRespondCancellation('accept')}
+            onOpenVeryLateCancelModal={() => setIsVeryLateModalOpen(true)}
           />
         </div>
       </div>
 
       {/* MODALS */}
+      {isCancelRequestModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-3xl p-6 sm:p-8 max-w-md w-full shadow-2xl space-y-6">
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-bold text-fiverr-dark flex items-center gap-2">
+                <RotateCcw className="w-5 h-5 text-rose-600" />
+                <span>Request Gig Cancellation</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setIsCancelRequestModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 font-bold text-sm cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+            <form onSubmit={handleRequestCancellation} className="space-y-4 text-xs">
+              <div>
+                <label className="block text-fiverr-dark font-bold uppercase tracking-wider text-[10px] mb-1.5">
+                  Cancellation Reason (Required)
+                </label>
+                <select
+                  value={cancelModalReason}
+                  onChange={(e) => setCancelModalReason(e.target.value)}
+                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-fiverr-dark focus:outline-none focus:border-rose-500"
+                >
+                  <option value="Project scope changed">Project scope changed</option>
+                  <option value="Mutual agreement">Mutual agreement</option>
+                  <option value="Unresponsive partner">Unresponsive partner</option>
+                  <option value="Timeline conflicts">Timeline conflicts</option>
+                  <option value="Other reason">Other reason</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-fiverr-dark font-bold uppercase tracking-wider text-[10px] mb-1.5">
+                  Additional Details (Optional)
+                </label>
+                <textarea
+                  rows={3}
+                  value={cancelModalDetails}
+                  onChange={(e) => setCancelModalDetails(e.target.value)}
+                  placeholder="Provide context for the cancellation request..."
+                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-fiverr-dark placeholder-slate-400 focus:outline-none focus:border-rose-500 resize-none"
+                />
+              </div>
+              {cancelModalError && (
+                <p className="text-xs text-rose-600 font-semibold">{cancelModalError}</p>
+              )}
+              <div className="flex items-center justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setIsCancelRequestModalOpen(false)}
+                  className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-fiverr-dark font-bold rounded-xl text-xs cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmittingCancel || !cancelModalReason.trim()}
+                  className="px-5 py-2.5 bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white font-bold rounded-xl text-xs cursor-pointer shadow-xs"
+                >
+                  {isSubmittingCancel ? 'Submitting...' : 'Send Cancellation Request'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {isRejectCancelModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-3xl p-6 sm:p-8 max-w-md w-full shadow-2xl space-y-6">
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-bold text-fiverr-dark flex items-center gap-2">
+                <AlertCircle className="w-5 h-5 text-amber-600" />
+                <span>Reject Cancellation Request</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setIsRejectCancelModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 font-bold text-sm cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+            <form onSubmit={(e) => { e.preventDefault(); if (rejectModalReason.trim()) handleRespondCancellation('reject', rejectModalReason.trim()); }} className="space-y-4 text-xs">
+              <div>
+                <label className="block text-fiverr-dark font-bold uppercase tracking-wider text-[10px] mb-1.5">
+                  Rejection Reason (Required)
+                </label>
+                <textarea
+                  rows={3}
+                  required
+                  value={rejectModalReason}
+                  onChange={(e) => setRejectModalReason(e.target.value)}
+                  placeholder="Explain why you are rejecting the cancellation request..."
+                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-fiverr-dark placeholder-slate-400 focus:outline-none focus:border-amber-500 resize-none"
+                />
+              </div>
+              {cancelModalError && (
+                <p className="text-xs text-rose-600 font-semibold">{cancelModalError}</p>
+              )}
+              <div className="flex items-center justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setIsRejectCancelModalOpen(false)}
+                  className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-fiverr-dark font-bold rounded-xl text-xs cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmittingCancel || !rejectModalReason.trim()}
+                  className="px-5 py-2.5 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white font-bold rounded-xl text-xs cursor-pointer shadow-xs"
+                >
+                  {isSubmittingCancel ? 'Submitting...' : 'Confirm Rejection'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {isVeryLateModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-3xl p-6 sm:p-8 max-w-md w-full shadow-2xl space-y-6">
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-bold text-fiverr-dark flex items-center gap-2">
+                <AlertCircle className="w-5 h-5 text-rose-600" />
+                <span>Very Late Cancellation & Full Refund</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setIsVeryLateModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 font-bold text-sm cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+            <p className="text-xs text-slate-500 leading-relaxed">
+              Since this order is more than 24 hours past the agreed delivery due date, you may cancel without seller approval and receive a 100% full escrow refund.
+            </p>
+            <form onSubmit={handleVeryLateCancellation} className="space-y-4 text-xs">
+              <div>
+                <label className="block text-fiverr-dark font-bold uppercase tracking-wider text-[10px] mb-1.5">
+                  Cancellation Reason (Required)
+                </label>
+                <textarea
+                  rows={3}
+                  required
+                  value={veryLateReason}
+                  onChange={(e) => setVeryLateReason(e.target.value)}
+                  placeholder="State reason for very late cancellation..."
+                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-fiverr-dark placeholder-slate-400 focus:outline-none focus:border-rose-500 resize-none"
+                />
+              </div>
+              {cancelModalError && (
+                <p className="text-xs text-rose-600 font-semibold">{cancelModalError}</p>
+              )}
+              <div className="flex items-center justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setIsVeryLateModalOpen(false)}
+                  className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-fiverr-dark font-bold rounded-xl text-xs cursor-pointer"
+                >
+                  Back
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmittingCancel || !veryLateReason.trim()}
+                  className="px-5 py-2.5 bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white font-bold rounded-xl text-xs cursor-pointer shadow-xs"
+                >
+                  {isSubmittingCancel ? 'Cancelling...' : 'Cancel & Claim Full Refund'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
       <WorkstreamVideoCallModal
         key={`video_${order.id}`}
         isOpen={isVideoCallModalOpen}

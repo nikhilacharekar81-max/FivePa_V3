@@ -130,10 +130,6 @@ export class PostgresStore {
           ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO ${appUser};
           ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO ${appUser};
         `);
-        const passHash = bcrypt.hashSync('password123', 10);
-        const adminHash = bcrypt.hashSync('adminpassword123', 10);
-        await adminPool.query(`UPDATE users SET password = $1 WHERE role NOT IN ('admin', 'super_admin')`, [passHash]);
-        await adminPool.query(`UPDATE users SET password = $1 WHERE role IN ('admin', 'super_admin')`, [adminHash]);
         console.log(`[PostgresStore] Migrations executed successfully on ${getDatabaseName()}.`);
       }
     } finally {
@@ -181,7 +177,7 @@ export class PostgresStore {
   // --- ORDERS ---
   async saveOrders(orders: Order[]): Promise<void> {
     return this.withLock('orders', async () => {
-      if (!orders || orders.length === 0) return;
+      if (!orders) return;
       const client = await this.getPool().connect();
       try {
         await client.query('BEGIN');
@@ -315,7 +311,7 @@ export class PostgresStore {
   // --- MESSAGES ---
   async saveMessages(messages: Message[]): Promise<void> {
     return this.withLock('messages', async () => {
-      if (!messages || messages.length === 0) return;
+      if (!messages) return;
       const client = await this.getPool().connect();
       try {
         await client.query('BEGIN');
@@ -376,7 +372,7 @@ export class PostgresStore {
   // --- REVIEWS ---
   async saveReviews(reviews: Review[]): Promise<void> {
     return this.withLock('reviews', async () => {
-      if (!reviews || reviews.length === 0) return;
+      if (!reviews) return;
       const client = await this.getPool().connect();
       try {
         await client.query('BEGIN');
@@ -455,7 +451,7 @@ export class PostgresStore {
   // --- USERS ---
   async saveUsers(users: User[]): Promise<void> {
     return this.withLock('users', async () => {
-      if (!users || users.length === 0) return;
+      if (!users) return;
       const client = await this.getPool().connect();
       try {
         await client.query('BEGIN');
@@ -551,11 +547,7 @@ export class PostgresStore {
       createdAt: r.created_at,
       isFlagged: r.is_flagged,
       flagReason: r.flag_reason || undefined,
-      password: (process.env.NODE_ENV === 'test' && r.id && r.id.startsWith('user_') && !['admin', 'super_admin'].includes(r.role))
-        ? bcrypt.hashSync('password123', 10)
-        : (process.env.NODE_ENV === 'test' && ['admin', 'super_admin'].includes(r.role))
-          ? bcrypt.hashSync('adminpassword123', 10)
-          : (r.password || undefined),
+      password: r.password || undefined,
       sessionVersion: Number(r.session_version || 1),
       knownDevices: r.known_devices || [],
       isAvailableNow: r.is_available_now
@@ -565,7 +557,7 @@ export class PostgresStore {
   // --- GIGS ---
   async saveGigs(gigs: Gig[]): Promise<void> {
     return this.withLock('gigs', async () => {
-      if (!gigs || gigs.length === 0) return;
+      if (!gigs) return;
       const client = await this.getPool().connect();
       try {
         await client.query('BEGIN');
@@ -657,7 +649,7 @@ export class PostgresStore {
   // --- PROJECTS ---
   async saveProjects(projects: Project[]): Promise<void> {
     return this.withLock('projects', async () => {
-      if (!projects || projects.length === 0) return;
+      if (!projects) return;
       const client = await this.getPool().connect();
       try {
         await client.query('BEGIN');
@@ -741,7 +733,7 @@ export class PostgresStore {
   // --- PROPOSALS ---
   async saveProposals(proposals: Proposal[]): Promise<void> {
     return this.withLock('proposals', async () => {
-      if (!proposals || proposals.length === 0) return;
+      if (!proposals) return;
       const client = await this.getPool().connect();
       try {
         await client.query('BEGIN');
@@ -809,7 +801,7 @@ export class PostgresStore {
   // --- WORKSPACES ---
   async saveWorkspaces(workspaces: any[]): Promise<void> {
     return this.withLock('workspaces', async () => {
-      if (!workspaces || workspaces.length === 0) return;
+      if (!workspaces) return;
       const client = await this.getPool().connect();
       try {
         await client.query('BEGIN');
@@ -847,6 +839,12 @@ export class PostgresStore {
             ]
           );
         }
+        if (seen.size > 0) {
+          const placeholders = Array.from(seen).map((_, i) => `$${i + 1}`).join(',');
+          await client.query(`DELETE FROM workspaces WHERE workspace_id NOT IN (${placeholders})`, Array.from(seen));
+        } else {
+          await client.query('DELETE FROM workspaces');
+        }
         await client.query('COMMIT');
       } catch (e) {
         await client.query('ROLLBACK');
@@ -883,7 +881,7 @@ export class PostgresStore {
   // --- OFFERS ---
   async saveOffers(offers: WorkstreamOffer[]): Promise<void> {
     return this.withLock('offers', async () => {
-      if (!offers || offers.length === 0) return;
+      if (!offers) return;
       const client = await this.getPool().connect();
       try {
         await client.query('BEGIN');
@@ -916,6 +914,12 @@ export class PostgresStore {
               o.resolvedAt || null, o.resolvedBy || null, JSON.stringify(o.metadata || null)
             ]
           );
+        }
+        if (seen.size > 0) {
+          const placeholders = Array.from(seen).map((_, i) => `$${i + 1}`).join(',');
+          await client.query(`DELETE FROM workstream_offers WHERE id NOT IN (${placeholders})`, Array.from(seen));
+        } else {
+          await client.query('DELETE FROM workstream_offers');
         }
         await client.query('COMMIT');
       } catch (e) {
@@ -951,7 +955,7 @@ export class PostgresStore {
   // --- CUSTOM INVOICES ---
   async saveCustomInvoices(invoices: CustomInvoice[]): Promise<void> {
     return this.withLock('custom_invoices', async () => {
-      if (!invoices || invoices.length === 0) return;
+      if (!invoices) return;
       const client = await this.getPool().connect();
       try {
         await client.query('BEGIN');
@@ -981,6 +985,12 @@ export class PostgresStore {
               inv.description || null, inv.createdAt || new Date().toISOString(), inv.paidAt || null, inv.relatedOrderId || null
             ]
           );
+        }
+        if (seen.size > 0) {
+          const placeholders = Array.from(seen).map((_, i) => `$${i + 1}`).join(',');
+          await client.query(`DELETE FROM custom_invoices WHERE id NOT IN (${placeholders})`, Array.from(seen));
+        } else {
+          await client.query('DELETE FROM custom_invoices');
         }
         await client.query('COMMIT');
       } catch (e) {
@@ -1012,7 +1022,7 @@ export class PostgresStore {
   // --- DISPUTES ---
   async saveDisputes(disputes: Dispute[]): Promise<void> {
     return this.withLock('disputes', async () => {
-      if (!disputes || disputes.length === 0) return;
+      if (!disputes) return;
       const client = await this.getPool().connect();
       try {
         await client.query('BEGIN');
@@ -1044,6 +1054,12 @@ export class PostgresStore {
               d.resolutionType || null, d.notes || null, d.assignedTo || null
             ]
           );
+        }
+        if (seen.size > 0) {
+          const placeholders = Array.from(seen).map((_, i) => `$${i + 1}`).join(',');
+          await client.query(`DELETE FROM disputes WHERE id NOT IN (${placeholders})`, Array.from(seen));
+        } else {
+          await client.query('DELETE FROM disputes');
         }
         await client.query('COMMIT');
       } catch (e) {
@@ -1078,7 +1094,7 @@ export class PostgresStore {
   // --- REFUNDS ---
   async saveRefunds(refunds: Refund[]): Promise<void> {
     return this.withLock('refunds', async () => {
-      if (!refunds || refunds.length === 0) return;
+      if (!refunds) return;
       const client = await this.getPool().connect();
       try {
         await client.query('BEGIN');
@@ -1098,6 +1114,12 @@ export class PostgresStore {
                created_at = EXCLUDED.created_at`,
             [ref.id, ref.orderId, ref.buyerId, ref.amount, ref.reason || null, ref.status, ref.createdAt]
           );
+        }
+        if (seen.size > 0) {
+          const placeholders = Array.from(seen).map((_, i) => `$${i + 1}`).join(',');
+          await client.query(`DELETE FROM refunds WHERE id NOT IN (${placeholders})`, Array.from(seen));
+        } else {
+          await client.query('DELETE FROM refunds');
         }
         await client.query('COMMIT');
       } catch (e) {
@@ -1126,7 +1148,7 @@ export class PostgresStore {
   // --- PAYOUTS ---
   async savePayouts(payouts: Payout[]): Promise<void> {
     return this.withLock('payouts', async () => {
-      if (!payouts || payouts.length === 0) return;
+      if (!payouts) return;
       const client = await this.getPool().connect();
       try {
         await client.query('BEGIN');
@@ -1146,6 +1168,12 @@ export class PostgresStore {
                account_details = EXCLUDED.account_details`,
             [p.id, p.freelancerId, p.amount, p.method, p.status, p.createdAt, p.accountDetails || null]
           );
+        }
+        if (seen.size > 0) {
+          const placeholders = Array.from(seen).map((_, i) => `$${i + 1}`).join(',');
+          await client.query(`DELETE FROM payouts WHERE id NOT IN (${placeholders})`, Array.from(seen));
+        } else {
+          await client.query('DELETE FROM payouts');
         }
         await client.query('COMMIT');
       } catch (e) {
@@ -1174,7 +1202,7 @@ export class PostgresStore {
   // --- SUPPORT TICKETS ---
   async saveSupportTickets(tickets: SupportTicket[]): Promise<void> {
     return this.withLock('support_tickets', async () => {
-      if (!tickets || tickets.length === 0) return;
+      if (!tickets) return;
       const client = await this.getPool().connect();
       try {
         await client.query('BEGIN');
@@ -1195,6 +1223,12 @@ export class PostgresStore {
                messages = EXCLUDED.messages`,
             [t.id, t.userId, t.userName, t.subject, t.priority || 'medium', t.status || 'open', t.createdAt, JSON.stringify(t.messages || [])]
           );
+        }
+        if (seen.size > 0) {
+          const placeholders = Array.from(seen).map((_, i) => `$${i + 1}`).join(',');
+          await client.query(`DELETE FROM support_tickets WHERE id NOT IN (${placeholders})`, Array.from(seen));
+        } else {
+          await client.query('DELETE FROM support_tickets');
         }
         await client.query('COMMIT');
       } catch (e) {
@@ -1224,7 +1258,7 @@ export class PostgresStore {
   // --- AUDIT LOGS ---
   async saveAuditLogs(logs: AuditLog[]): Promise<void> {
     return this.withLock('audit_logs', async () => {
-      if (!logs || logs.length === 0) return;
+      if (!logs) return;
       const client = await this.getPool().connect();
       try {
         await client.query('BEGIN');
@@ -1244,6 +1278,12 @@ export class PostgresStore {
                timestamp = EXCLUDED.timestamp`,
             [l.id, l.actor, l.role, l.action, l.target, l.details || null, l.timestamp]
           );
+        }
+        if (seen.size > 0) {
+          const placeholders = Array.from(seen).map((_, i) => `$${i + 1}`).join(',');
+          await client.query(`DELETE FROM audit_logs WHERE id NOT IN (${placeholders})`, Array.from(seen));
+        } else {
+          await client.query('DELETE FROM audit_logs');
         }
         await client.query('COMMIT');
       } catch (e) {
@@ -1272,7 +1312,7 @@ export class PostgresStore {
   // --- USER EMAILS ---
   async saveUserEmails(emails: UserEmail[]): Promise<void> {
     return this.withLock('user_emails', async () => {
-      if (!emails || emails.length === 0) return;
+      if (!emails) return;
       const client = await this.getPool().connect();
       try {
         await client.query('BEGIN');
@@ -1298,6 +1338,12 @@ export class PostgresStore {
               (em as any).type || null, (em as any).sentAt || null, em.date || null, !!em.read
             ]
           );
+        }
+        if (seen.size > 0) {
+          const placeholders = Array.from(seen).map((_, i) => `$${i + 1}`).join(',');
+          await client.query(`DELETE FROM user_emails WHERE id NOT IN (${placeholders})`, Array.from(seen));
+        } else {
+          await client.query('DELETE FROM user_emails');
         }
         await client.query('COMMIT');
       } catch (e) {
@@ -1453,6 +1499,46 @@ export class PostgresStore {
     if (!isPostgresEnabled()) return;
     await this.getPool().query('UPDATE notifications SET read = TRUE WHERE user_id = $1', [userId]);
   }
+
+  async cleanAllData(): Promise<void> {
+    if (!isPostgresEnabled()) return;
+    const pool = this.getPool();
+    const tables = [
+      'notifications',
+      'audit_logs',
+      'user_emails',
+      'support_tickets',
+      'payouts',
+      'refunds',
+      'disputes',
+      'custom_invoices',
+      'workstream_offers',
+      'workspaces',
+      'uploads',
+      'reviews',
+      'messages',
+      'orders',
+      'proposals',
+      'projects',
+      'gigs',
+      'users',
+      'financial_ledger_state',
+      'app_metadata'
+    ];
+    for (const table of tables) {
+      try {
+        await pool.query(`TRUNCATE TABLE ${table} CASCADE`);
+      } catch {
+        try {
+          await pool.query(`DELETE FROM ${table}`);
+        } catch (delErr: any) {
+          console.warn(`[PostgresStore] Notice: table ${table} clean:`, delErr?.message);
+        }
+      }
+    }
+    console.log('[PostgresStore] All application tables successfully cleaned in PostgreSQL.');
+  }
 }
 
 export const postgresStore = new PostgresStore();
+
