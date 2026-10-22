@@ -256,7 +256,10 @@ CREATE TABLE IF NOT EXISTS support_tickets (
   priority VARCHAR(32) NOT NULL,
   status VARCHAR(32) NOT NULL,
   created_at VARCHAR(32) NOT NULL,
-  messages JSONB DEFAULT '[]'::jsonb
+  messages JSONB DEFAULT '[]'::jsonb,
+  is_appeal BOOLEAN DEFAULT FALSE,
+  category VARCHAR(64),
+  appeal_context JSONB
 );
 
 CREATE TABLE IF NOT EXISTS audit_logs (

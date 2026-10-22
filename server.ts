@@ -1159,6 +1159,7 @@ setInterval(() => {
   const now = Date.now();
   for (const [k, v] of wsConnectionBuckets) if (now > v.resetAt) wsConnectionBuckets.delete(k);
   for (const [k, v] of loginAttempts) if (now > v.resetAt) loginAttempts.delete(k);
+  for (const [k, v] of rateBuckets) if (now > v.resetAt) rateBuckets.delete(k);
 }, 60_000).unref();
 
 function checkWsIpRateLimit(ip: string): boolean {
@@ -3372,7 +3373,7 @@ function handlePayoutRequest(req: Request, res: Response) {
     }
 
     const id = 'pay_' + randomUUID().slice(0, 8);
-    const accountDetails = String(req.body?.accountDetails || 'Primary Bank Account');
+    const accountDetails = String(req.body?.accountDetails || 'Primary Bank Account').slice(0, 500);
     const { payout } = financeLedger.requestPayout({
       payoutId: id,
       freelancerId,
@@ -5306,12 +5307,14 @@ app.patch('/api/user-emails/:id/read', requireAuth, (req, res) => {
 });
 
 // User Support Ticket Creation API
-app.post('/api/support-tickets', requireAuth, (req, res) => {
+app.post('/api/support-tickets', requireAuth, rateLimit(10, 60_000), (req, res) => {
   const authUserId = (req as any).authenticatedUserId;
   const caller = users.find(u => u.id === authUserId);
   if (!caller) return res.status(401).json({ error: 'User not found' });
 
   const { subject, text, priority = 'medium', isAppeal: clientIsAppeal, category } = req.body;
+  const safeSubject = String(subject || '').slice(0, 200);
+  const safeText = String(text || '').slice(0, 5000);
   const userId = caller.id;
   const userName = caller.name;
 
@@ -5320,21 +5323,30 @@ app.post('/api/support-tickets', requireAuth, (req, res) => {
   const isAppeal = isSuspendedOrRestricted && (
     clientIsAppeal === true ||
     category === 'appeal' ||
-    String(subject || '').toLowerCase().includes('appeal') ||
+    String(safeSubject || '').toLowerCase().includes('appeal') ||
     caller.status === 'suspended'
   );
 
   // Prevent duplicate active appeals for the same current restriction
   if (isAppeal) {
-    const hasActiveAppeal = supportTickets.some(t =>
-      t.userId === caller.id &&
-      (t.status === 'open' || t.status === 'in_progress') &&
-      (t.isAppeal === true || t.category === 'appeal' || String(t.subject || '').toLowerCase().includes('appeal'))
-    );
+    const currentStatus = caller.status;
+    const currentFlagReason = caller.flagReason || 'Policy Violation';
+
+    const hasActiveAppeal = supportTickets.some(t => {
+      if (t.userId !== caller.id) return false;
+      if (t.status !== 'open' && t.status !== 'in_progress') return false;
+      if (!t.isAppeal && t.category !== 'appeal' && !String(t.subject || '').toLowerCase().includes('appeal')) return false;
+
+      const ctx = t.appealContext;
+      if (ctx) {
+        return ctx.accountStatus === currentStatus && (ctx.flagReason || 'Policy Violation') === currentFlagReason;
+      }
+      return true;
+    });
 
     if (hasActiveAppeal) {
       return res.status(409).json({
-        error: 'An active appeal is already currently open for your account. Please wait for our support team to review your case before submitting another appeal.'
+        error: 'An active appeal is already currently open for your account restriction. Please wait for our support team to review your case before submitting another appeal.'
       });
     }
   }
@@ -5349,14 +5361,14 @@ app.post('/api/support-tickets', requireAuth, (req, res) => {
     id: 'tick_' + Date.now() + '_' + randomUUID().slice(0, 8),
     userId,
     userName,
-    subject: subject || (isAppeal ? `Account Appeal (${caller.status})` : 'General Support Query'),
+    subject: safeSubject || (isAppeal ? `Account Appeal (${caller.status})` : 'General Support Query'),
     priority: isAppeal ? 'high' : priority,
     status: 'open',
     createdAt: new Date().toISOString().split('T')[0],
     messages: [
       {
         sender: userName,
-        text: text || 'I need support assistance regarding my account.',
+        text: safeText || 'I need support assistance regarding my account.',
         timestamp: new Date().toISOString(),
         ...(appealContext ? { appealContext } : {})
       }
@@ -5374,8 +5386,8 @@ app.post('/api/support-tickets', requireAuth, (req, res) => {
     action: isAppeal ? 'ACCOUNT_APPEAL_SUBMITTED' : 'SUPPORT_TICKET_OPENED',
     target: `Ticket #${newTicket.id}`,
     details: isAppeal
-      ? `User submitted account appeal for ${caller.status} status (Flag reason: ${caller.flagReason || 'None'}): ${subject}`
-      : `User submitted support request: ${subject}`,
+      ? `User submitted account appeal for ${caller.status} status (Flag reason: ${caller.flagReason || 'None'}): ${safeSubject}`
+      : `User submitted support request: ${safeSubject}`,
     timestamp: new Date().toLocaleString()
   });
 
@@ -5929,7 +5941,7 @@ app.get('/api/messages/:orderId', requireAuth, (req, res) => {
   res.json(filtered);
 });
 
-app.post('/api/messages', requireAuth, (req, res) => {
+app.post('/api/messages', requireAuth, rateLimit(120, 60_000), (req, res) => {
   const authUserId = (req as any).authenticatedUserId;
   const caller = users.find(u => u.id === authUserId);
   if (!caller) return res.status(401).json({ error: 'User not found' });
@@ -6536,7 +6548,7 @@ app.patch('/api/gigs/:id/feature', requireAuth, requireActiveStatus, (req, res) 
   res.json(g);
 });
 
-app.post('/api/proposals', requireAuth, requireActiveStatus, (req, res) => {
+app.post('/api/proposals', requireAuth, requireActiveStatus, rateLimit(30, 60_000), (req, res) => {
   const caller = (req as any).authenticatedUser;
   if (caller.status === 'restricted') return res.status(403).json({ error: 'Restricted: You cannot submit new proposals while your account is restricted.' });
 
@@ -6561,7 +6573,7 @@ app.post('/api/proposals', requireAuth, requireActiveStatus, (req, res) => {
     freelancerName: caller.name,
     freelancerAvatar: caller.avatar,
     freelancerTitle: caller.title || 'Senior Engineer',
-    coverLetter: typeof req.body.coverLetter === 'string' ? req.body.coverLetter.trim() : '',
+    coverLetter: typeof req.body.coverLetter === 'string' ? req.body.coverLetter.trim().slice(0, 5000) : '',
     bidAmount,
     deliveryDays,
     createdAt: new Date().toISOString().split('T')[0],

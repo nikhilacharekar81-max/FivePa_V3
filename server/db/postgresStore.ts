@@ -1203,8 +1203,8 @@ export class PostgresStore {
           if (!t?.id || seen.has(t.id)) continue;
           seen.add(t.id);
           await client.query(
-            `INSERT INTO support_tickets (id, user_id, user_name, subject, priority, status, created_at, messages)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            `INSERT INTO support_tickets (id, user_id, user_name, subject, priority, status, created_at, messages, is_appeal, category, appeal_context)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
              ON CONFLICT (id) DO UPDATE SET
                user_id = EXCLUDED.user_id,
                user_name = EXCLUDED.user_name,
@@ -1212,8 +1212,23 @@ export class PostgresStore {
                priority = EXCLUDED.priority,
                status = EXCLUDED.status,
                created_at = EXCLUDED.created_at,
-               messages = EXCLUDED.messages`,
-            [t.id, t.userId, t.userName, t.subject, t.priority || 'medium', t.status || 'open', t.createdAt, JSON.stringify(t.messages || [])]
+               messages = EXCLUDED.messages,
+               is_appeal = EXCLUDED.is_appeal,
+               category = EXCLUDED.category,
+               appeal_context = EXCLUDED.appeal_context`,
+            [
+              t.id,
+              t.userId,
+              t.userName,
+              t.subject,
+              t.priority || 'medium',
+              t.status || 'open',
+              t.createdAt,
+              JSON.stringify(t.messages || []),
+              !!t.isAppeal,
+              t.category || null,
+              t.appealContext ? JSON.stringify(t.appealContext) : null
+            ]
           );
         }
         if (seen.size > 0) {
@@ -1242,7 +1257,10 @@ export class PostgresStore {
       priority: r.priority,
       status: r.status,
       createdAt: r.created_at,
-      messages: r.messages || []
+      messages: r.messages || [],
+      ...(r.is_appeal ? { isAppeal: true } : {}),
+      ...(r.category ? { category: r.category } : {}),
+      ...(r.appeal_context ? { appealContext: r.appeal_context } : {})
     }));
   }
 
@@ -1470,7 +1488,7 @@ export class PostgresStore {
         (err?.constraint?.includes('dedup') ||
          err?.detail?.includes('dedup_key') ||
          err?.message?.includes('dedup_key') ||
-         Boolean(n.dedupKey));
+         err?.constraint === 'notifications_dedup_key_key');
 
       if (isDedupConflict) {
         return { inserted: false, duplicate: true };
